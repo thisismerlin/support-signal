@@ -11,6 +11,27 @@ for c in r["checks"]:
     errs += [f"check {c['id']} ref {x}" for x in c.get("refs", []) if x not in r["refs"]]
 for s in r["signals"]:
     errs += [f"signal {s['id']} -> {x}" for x in s.get("unlocked_by_any_check", []) if x not in ids]
+# Field scopes: a typo here would silently stop a column mapping rather than fail.
+SCOPES = {"case", "bot", "both"}
+errs += [f"field {k} file: {f['file']}" for k, f in r["fields"].items()
+         if f.get("file", "case") not in SCOPES]
+errs += [f"use {u['id']} needs_file: {u['needs_file']}" for u in r["uses"]
+         if u.get("needs_file", "case") not in SCOPES]
+# A synonym repeated inside one scope is a first-match race; across scopes it is
+# the point. "both" shares a namespace with each of the other two.
+for scope in ("case", "bot"):
+    seen = {}
+    for k, f in r["fields"].items():
+        if f.get("file", "case") not in (scope, "both"):
+            continue
+        for s in {k.replace("_", " "), *f.get("synonyms", [])}:
+            if seen.get(s, k) != k:
+                errs.append(f"synonym {s!r} claimed by both {seen[s]} and {k} in {scope} files")
+            seen[s] = k
+# The engine reads these by name; a rename here must not fail silently at runtime.
+params = r.get("resolution_audit", {}).get("params", {})
+errs += [f"resolution_audit.params missing {p}" for p in
+         ("return_windows_days", "escalation_within_minutes", "normalise_reasons") if p not in params]
 if errs:
     sys.exit("Rule errors:\n" + "\n".join(errs))
 (root / "dist").mkdir(exist_ok=True)

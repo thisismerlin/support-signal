@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.2.0";
+export const ENGINE_VERSION = "0.3.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -32,10 +32,17 @@ export function parseCSV(text) {
 
 // ---------- column mapping ----------
 const norm = (s) => String(s).toLowerCase().replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
-export function autoMap(headers, rules) {
+
+// Which fields a file's headers are offered. A field's `file:` is "case"
+// (the default), "bot" or "both"; one call maps one file, so the two sets never
+// share a namespace and the same header can mean a different field in each.
+const inScope = (f, scope) => { const s = f.file || "case"; return s === scope || s === "both"; };
+
+export function autoMap(headers, rules, scope = "case") {
   const map = {};
   const used = new Set();
   for (const [key, f] of Object.entries(rules.fields)) {
+    if (!inScope(f, scope)) continue;
     const cands = [key.replace(/_/g, " "), ...(f.synonyms || [])].map(norm);
     const hit = headers.find((h) => !used.has(h) && cands.includes(norm(h)));
     if (hit) { map[key] = hit; used.add(hit); }
@@ -56,6 +63,20 @@ export function parseDate(v) {
   return Number.isNaN(t) ? null : t;
 }
 const DAY = 86400000;
+
+// Reason and theme matching, shared by B3, which reports near-duplicate reason
+// pairs, and the resolution audit, which has to fold those same pairs to one
+// theme or miss real returns. One implementation so the two can't drift.
+export const themeKey = (s) =>
+  String(s).toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim().replace(/s\b/g, "").replace(/ /g, "");
+const acronym = (s) => String(s).toLowerCase().split(/[\s\-]+/).filter(Boolean).map((w) => w[0]).join("");
+// "Login issue" / "Login Issues" by key; "SSO" / "Single sign-on" by initials.
+export function nearDuplicate(x, y) {
+  return themeKey(x) === themeKey(y) ||
+    (x.length <= 5 && x.toLowerCase() === acronym(y)) ||
+    (y.length <= 5 && y.toLowerCase() === acronym(x));
+}
+
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const quantile = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const pct = (x, d = 0) => (x == null ? "n/a" : `${(x * 100).toFixed(d)}%`);
@@ -94,7 +115,7 @@ function canonical(records, map, rules) {
 }
 
 // ---------- the audit ----------
-export function runAudit({ records, mapping, history = null, rules, source = "upload" }) {
+export function runAudit({ records, mapping, history = null, bot = null, rules, source = "upload" }) {
   const map = mapping;
   const has = (k) => !!map[k];
   const { cases, real } = canonical(records, map, rules);
@@ -189,14 +210,9 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
   // B3 near-duplicates
   const nearDups = [];
   if (has("reason")) {
-    const keyOf = (s) => s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim().replace(/s\b/g, "");
-    const acr = (s) => s.toLowerCase().split(/[\s\-]+/).filter(Boolean).map((w) => w[0]).join("");
     const names = realReasons.map(([v]) => v);
-    for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++) {
-      const x = names[a], y = names[b];
-      const kx = keyOf(x).replace(/ /g, ""), ky = keyOf(y).replace(/ /g, "");
-      if (kx === ky || (x.length <= 5 && x.toLowerCase() === acr(y)) || (y.length <= 5 && y.toLowerCase() === acr(x))) nearDups.push([x, y]);
-    }
+    for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++)
+      if (nearDuplicate(names[a], names[b])) nearDups.push([names[a], names[b]]);
     const rare = realReasons.filter(([, k]) => k < 5).length;
     const tail = realReasons.length ? rare / realReasons.length : 0;
     const outcome = nearDups.length === 0 && tail < 0.2 ? "pass" : nearDups.length <= 3 ? "warn" : "fail";
@@ -300,11 +316,27 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
   set("AI6", u >= 20000 && perMonth >= 2000 ? "pass" : "warn", u, `${u.toLocaleString()} cases`,
     `${u.toLocaleString()} cases, about ${Math.round(perMonth).toLocaleString()} email or chat a month. Forethought publishes 20,000+ historical and 2,000+ a month; most vendors publish nothing, so ask.`);
 
-  // Checks defined in the rules but not computed by this engine version (B11, the
-  // resolution audit). Without an entry here the uses loop below dereferences undefined.
+  // B11. Judges the bot conversations export, not the case export: can a claimed
+  // resolution be reached from the conversation to the cases that followed it?
+  // The wording of every outcome is the rules' own, reported verbatim.
+  const botRows = bot && bot.records ? bot.records : [];
+  const botHas = (k) => !!(bot && bot.mapping && bot.mapping[k] && botRows.length);
+  const b11Words = (o) => (checkDef.B11.outcomes || {})[o] || "";
+  if (!botRows.length) set("B11", "not_in_export", null, "No bot export", b11Words("not_in_export"));
+  else if (botHas("bot_linked_cases")) set("B11", "pass", 1, "Case links", b11Words("pass"));
+  else if (botHas("account_id") && botHas("bot_started_at") && botHas("bot_ended_at"))
+    set("B11", "warn", 0.5, "Account and timings", b11Words("warn"));
+  else set("B11", "not_in_export", 0, "Not found", b11Words("not_in_export"));
+
+  // Checks defined in the rules but not computed by this engine version. Without an
+  // entry here the uses loop below dereferences undefined.
   for (const c of rules.checks) if (!R[c.id]) set(c.id, "needs_human", null, "Not yet", "This engine version doesn't run this check yet.");
 
   // ---------- uses ----------
+  // A use may need a file beyond the case export. It still reports its verdict
+  // when that file is absent, so the question stays visible, but it is left out of
+  // the fix-first weighting below: a missing second file isn't a flaw in this one.
+  const fileSupplied = (f) => (f === "bot" ? botRows.length > 0 : true);
   const rank = { pass: 0, warn: 1, needs_human: 1, fail: 2, not_in_export: 2 };
   const uses = rules.uses.map((us) => {
     const req = us.required.map((id) => R[id]);
@@ -313,7 +345,8 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
     const optBad = us.optional.map((id) => R[id]).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
     const blockers = req.filter((c) => rank[c.outcome] >= 1).concat(outcome !== "fail" && outcome !== "not_in_export" ? optBad : []);
-    return { id: us.id, title: us.title, outcome, blockers: blockers.map((c) => c.id) };
+    return { id: us.id, title: us.title, outcome, blockers: blockers.map((c) => c.id),
+      ...(us.needs_file ? { needs_file: us.needs_file, file_supplied: fileSupplied(us.needs_file) } : {}) };
   });
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
 
@@ -322,7 +355,10 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
 
   // ---------- fix first ----------
   const blockCount = {};
-  for (const us of uses) for (const id of us.blockers) blockCount[id] = (blockCount[id] || 0) + (rank[R[id].outcome] === 2 ? 2 : 1);
+  for (const us of uses) {
+    if (us.needs_file && !us.file_supplied) continue;
+    for (const id of us.blockers) blockCount[id] = (blockCount[id] || 0) + (rank[R[id].outcome] === 2 ? 2 : 1);
+  }
   const fixFirst = Object.entries(blockCount).filter(([id]) => R[id].outcome !== "needs_human" || blockCount[id] > 1)
     .sort((a, b) => b[1] - a[1] || rank[R[b[0]].outcome] - rank[R[a[0]].outcome]).slice(0, 3).map(([id]) => id);
 
@@ -331,7 +367,8 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
 
   return {
     meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status, source,
-      rows: n, cases: u, history_rows: history ? history.length : 0, generated: new Date().toISOString() },
+      rows: n, cases: u, history_rows: history ? history.length : 0, bot_rows: botRows.length,
+      generated: new Date().toISOString() },
     checks: R, uses, signals, fixFirst, drivers,
     vendor_questions: rules.vendor_questions,
   };

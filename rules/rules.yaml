@@ -10,7 +10,7 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.3.0
+  version: 0.4.0
   status: draft
   updated: 2026-10-03
   outcomes:
@@ -24,8 +24,17 @@ placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknow
 junk_text: ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"]
 team_words: ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue", "transfer", "transferred", "backlog"]
 
+# Each field declares which file its synonyms are matched against, through `file:`.
+# Omitted means `case`. The engine maps one file at a time and only offers that
+# file's fields, so the same header can mean different things in each:
+#   case   (default) matched only against a case export
+#   bot    matched only against a bot conversations export
+#   both   matched against either; the column means the same thing in both files
+# This is what lets `reopens` be the case field reopen_count in a case export and
+# the bot field bot_reopens in a bot export, and what stops a case export's
+# `conversation_id` being absorbed by bot_conversation_id.
 fields:
-  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber] }
+  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber, conversation id] }
   created_at:      { label: Created, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
   closed_at:       { label: Closed, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate] }
   status:          { label: Status, required: true, synonyms: [status, state] }
@@ -34,9 +43,13 @@ fields:
   reason:          { label: Contact reason, synonyms: [reason, category, case reason, contact reason, disposition, type, topic] }
   subject:         { label: Subject, synonyms: [subject, title, summary] }
   description:     { label: Description, synonyms: [description, body, first message, details] }
-  account_id:      { label: Account, synonyms: [account, account id, organization, organisation, company, customer id, accountid] }
-  account_size:    { label: Account size, synonyms: [account size, size, tier, plan, seats band, segment size] }
-  segment:         { label: Product or segment, synonyms: [product, segment, product line, region] }
+  # `file: both`: the bot export carries account, account size and product columns
+  # with the same meaning as the case export's, so they are reused rather than
+  # duplicated as bot_* fields. B11 reads account_id off the bot file to tell its
+  # warn case (account plus timings) from not_in_export.
+  account_id:      { label: Account, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid] }
+  account_size:    { label: Account size, file: both, synonyms: [account size, size, tier, plan, seats band, segment size] }
+  segment:         { label: Product or segment, file: both, synonyms: [product, segment, product line, region] }
   channel:         { label: Channel, synonyms: [channel, origin, via, source] }
   priority:        { label: Priority, synonyms: [priority, severity] }
   reopen_count:    { label: Reopens, synonyms: [reopens, reopen count, times reopened] }
@@ -52,33 +65,24 @@ fields:
   churned:         { label: Churned, synonyms: [churned, churn, cancelled, lost] }
   exit_event:      { label: Exit event, synonyms: [exit event, cancellation, deregistration] }
 
-  # Bot conversation fields, for the resolution audit. Tagged `file: bot`;
-  # every field above is a case field.
-  #
-  # STEP 3 MUST SCOPE autoMap BY FILE TYPE: bot synonyms tried only against the
-  # bot file, case synonyms only against case files. Today autoMap walks every
-  # field in insertion order and the first match wins, so the two sets share one
-  # namespace. Two consequences, both fixed by scoping and by nothing else:
-  #   - A case export with a `conversation_id` column is absorbed by
-  #     bot_conversation_id. No case field loses its column, but the column is
-  #     filed as a bot field.
-  #   - A bot file's `reopens` column is read as the case field reopen_count, so
-  #     a bot file loaded as cases reports B6 amber. The synonym can't simply be
-  #     moved: the demo case exports also have a column named `reopens`.
-  # These fields are ordered after the case fields so a case field always wins
-  # the first-match race. That is a stopgap, not the fix.
+  # Bot conversation fields, for the resolution audit. Matched only against a bot
+  # export, so these synonyms are free to repeat ones used by the case fields
+  # above. Field order carries no meaning: the two sets no longer share a
+  # namespace, so there is no first-match race to win.
   bot_conversation_id:  { label: Bot conversation ID, file: bot, synonyms: [bot conversation id, conversation id, bot chat id, chat id, session id] }
   bot_started_at:       { label: Bot conversation started, file: bot, synonyms: [started at, bot started at, conversation started at] }
   bot_ended_at:         { label: Bot conversation ended, file: bot, synonyms: [ended at, bot ended at, conversation ended at] }
   bot_intent:           { label: Bot intent, file: bot, synonyms: [intent, bot intent, detected intent, detected theme] }
   bot_claimed_resolved: { label: Bot claimed resolved, file: bot, synonyms: [claimed resolved, bot claimed resolved, claimed resolution] }
+  bot_customer_message: { label: Customer message, file: bot, synonyms: [customer message, first message, customer wording, utterance] }
+  # Shares every synonym with the case field reopen_count, which is the point: in
+  # a case export `reopens` is reopen_count and check B6 reads it, in a bot export
+  # the same header is this field and the audit's reopened bucket reads it.
+  bot_reopens:          { label: Bot conversation reopens, file: bot, synonyms: [reopens, reopen count, times reopened] }
   # Deliberately excludes "follow up of", "parent case" and "related case": those
   # belong to the case field follow_up_of, which check B6 reads. A bot link column
   # must never win that header, in either direction.
   bot_linked_cases:     { label: Linked cases, file: bot, synonyms: [linked case ids, linked cases, linked case id, bot linked cases] }
-  # The bot file's account, account size and product columns are the case fields
-  # account_id, account_size and segment. Same meaning, so they are reused rather
-  # than duplicated; a second field claiming "account id" would collide.
 
 checks:
   - id: C1
@@ -308,7 +312,7 @@ checks:
       pass: Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.
       warn: Conversations carry an account and timings but no case links, so returns have to be matched by account and timing. Matching is an inference, and near-simultaneous cases can be attributed to the wrong conversation.
       not_in_export: This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files.
-    note: Outcome wording is here for step 3. This engine version doesn't run B11.
+    note: The engine reports these words verbatim. Only the green path is implemented; amber reports the caveat and the audit returns "can't tell".
 
 uses:
   - id: resolution
@@ -335,6 +339,11 @@ uses:
     title: Did the bot's claimed resolutions hold?
     required: [B11]
     optional: []
+    # This use needs a second file. Without one it still reports not_in_export, so
+    # the question and what it would take are visible, but it is left out of the
+    # fix-first weighting: nobody who uploaded case data alone should be told to
+    # fix bot linking before fixing their cases.
+    needs_file: bot
 
 signals:
   - id: slow_passed
@@ -375,15 +384,19 @@ signals:
     shows: Reasons with long resolution times or many owners
     disclaimer: Where automation is most likely to frustrate customers.
 
-# Parameters for the resolution audit. Read by step 3; nothing runs them yet.
-# Every value is provisional: a starting point to calibrate against real bot
-# exports, not evidence. Don't quote them publicly.
+# Parameters for the resolution audit. Every value is provisional: a starting
+# point to calibrate against real bot exports, not evidence. Don't quote them
+# publicly.
 resolution_audit:
   params:
     provisional: true
-    return_windows_days: [7, 14, 30]   # same-theme return counted cumulatively
-    escalation_within_minutes: 60      # a human case this soon after the bot ended is an escalation, not a return
-    return_starts_after_hours: 12      # returns are only counted from here on, so escalations can't be double-counted
+    return_windows_days: [7, 14, 30]   # contradictions counted cumulatively; the largest is the whole window
+    # The escalation window and the return window are adjacent, not separated: a
+    # case at or inside this many minutes of the bot ending is an escalation, and
+    # anything after it is a return. There is deliberately no third parameter for
+    # where returns begin. A gap would quietly bank every same-theme case that
+    # landed in it as "not contradicted", which is the one answer it cannot be.
+    escalation_within_minutes: 60
     normalise_reasons: true            # same-theme matching must fold near-duplicate reasons ("Login Issues", "Single sign-on") to their base theme, or real returns are missed
   disclaimer: >-
     "Not contradicted" means silence, not success. It records only that no

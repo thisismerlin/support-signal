@@ -3,10 +3,10 @@
     "checks": {
       "C1": "pass", "C2": "not_in_export", "C3": "not_in_export", "C4": "warn",
       "B1": "warn", "B2": "fail", "B3": "warn", "B4": "warn", "B5": "needs_human", "B6": "not_in_export",
-      "B7": "needs_human", "B8": "pass", "B9": "pass", "B10": "pass",
+      "B7": "needs_human", "B8": "pass", "B9": "pass", "B10": "pass", "B11": "not_in_export",
       "AI1": "pass", "AI2": "warn", "AI3": "needs_human", "AI4": "warn", "AI5": "pass", "AI6": "warn"
     },
-    "uses": { "resolution": "warn", "transfers": "not_in_export", "csat": "warn", "churn": "warn", "ai": "warn" },
+    "uses": { "resolution": "warn", "transfers": "not_in_export", "csat": "warn", "churn": "warn", "ai": "warn", "resolution_audit": "not_in_export" },
     "signals": { "slow_passed": "locked", "handoff": "locked", "theme_movers": "on", "exit_events": "on", "keep_human": "locked" },
     "drivers_hold": ["slow"]
   },
@@ -14,10 +14,10 @@
     "checks": {
       "C1": "pass", "C2": "pass", "C3": "warn", "C4": "warn",
       "B1": "warn", "B2": "fail", "B3": "warn", "B4": "warn", "B5": "pass", "B6": "warn",
-      "B7": "fail", "B8": "pass", "B9": "pass", "B10": "pass",
+      "B7": "fail", "B8": "pass", "B9": "pass", "B10": "pass", "B11": "not_in_export",
       "AI1": "pass", "AI2": "warn", "AI3": "needs_human", "AI4": "warn", "AI5": "pass", "AI6": "warn"
     },
-    "uses": { "resolution": "warn", "transfers": "warn", "csat": "warn", "churn": "pass", "ai": "warn" },
+    "uses": { "resolution": "warn", "transfers": "warn", "csat": "warn", "churn": "pass", "ai": "warn", "resolution_audit": "not_in_export" },
     "signals": { "slow_passed": "caution", "handoff": "caution", "theme_movers": "on", "exit_events": "on", "keep_human": "caution" },
     "drivers_hold": ["slow", "slow_passed"]
   }

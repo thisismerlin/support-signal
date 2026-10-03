@@ -47,7 +47,10 @@ The bot conversations are a fictional AI agent's chats, each with a `claimed_res
 | Both bot files | `bot_conversation_id`, `started_at`, `ended_at`, `account_id`, `account_size`, `product`, `intent` (the bot's detected theme), `customer_message`, `claimed_resolved` |
 | With history only | `reopens` (times the conversation was reopened), `linked_case_ids` (every human case the same account opened in the 30 days after `ended_at`, separated by semicolons) |
 
-Column names deliberately avoid every synonym in `rules/rules.yaml`. For example, no column is called `follow_up_of` or `related_case`, so a bot file loaded as cases can't silently change B6.
+The bot files are mapped in bot scope, so their headers are matched only against fields tagged `file: bot` or `file: both` in `rules/rules.yaml`. Two consequences worth knowing when reading these columns:
+
+- `reopens` is deliberately a header both scopes claim: in a case export it is the case field `reopen_count`, which check B6 reads, and in a bot export it is `bot_reopens`. Scoping is the only thing telling them apart, and `npm test` asserts both directions.
+- No column is named `follow_up_of`, `parent_case` or `related_case`, and no bot field claims those headers, so the bot link column can never be read as the case field `follow_up_of`. Scoping decides what a header means per file, though, not which file it is: a bot export handed to the case slot is still read as cases.
 
 ### Planted counts
 All counts are exact, not sampled. They are recorded in `data/generation_stats.json` under `bot`.
