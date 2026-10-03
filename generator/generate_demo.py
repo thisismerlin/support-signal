@@ -214,5 +214,229 @@ write(OUT / "larkspur_history_log.csv", ["case_id", "changed_at", "field", "old_
 stats = dict(seed=SEED, accounts=N_ACCOUNTS, accounts_with_cases=sum(1 for a in accounts if a["cases"]),
              cases=len(cases), history_rows=len(history),
              churned_accounts=sum(1 for a in accounts if a["churned"]))
+
+# ---------------------------------------------------------------------------
+# Bot layer, for the resolution audit.
+# Runs after everything above on its own random stream, so the case exports,
+# their planted flaws and the churn drivers are byte-for-byte unchanged.
+# Bot conversations sit in their own files; the cases that follow them are
+# existing human case rows: each bot conversation is timed relative to one.
+# ---------------------------------------------------------------------------
+brng = np.random.default_rng([SEED, 1])
+WINDOW = timedelta(days=30)
+BOT_LAST_END = END - WINDOW  # every claimed resolution has a complete 30-day window
+
+# Exact planted counts. Claimed resolved: 1,200. Not claimed: 300 (out of audit scope).
+BOT_PLAN = {
+    "escalated":      96,   # claimed resolved, then handed to a human within the hour
+    "same_theme_7":   84,   # same account, same theme, back within 7 days
+    "same_theme_14":  48,   # ... within 7 to 14 days
+    "same_theme_30":  48,   # ... within 14 to 30 days
+    "unrelated":      120,  # same account back within 30 days, different theme only
+    "reopened":       72,   # the bot conversation itself was reopened
+    "silence":        732,  # no case from the account within 30 days
+    "handoff":        210,  # bot did not claim resolution, handed to a human
+    "abandoned":      90,   # bot did not claim resolution, customer left
+}
+LAGS = {  # (low, high) in days between bot conversation ending and the follow-up case
+    "escalated": (5 / 1440, 55 / 1440), "handoff": (5 / 1440, 55 / 1440),
+    "same_theme_7": (0.5, 6.5), "same_theme_14": (7.5, 13.5), "same_theme_30": (14.5, 29.5),
+    "unrelated": (1.0, 29.0),
+}
+CONTRADICTED = {"reopened", "escalated", "same_theme_7", "same_theme_14", "same_theme_30"}
+NOT_CLAIMED = {"handoff", "abandoned"}
+
+
+def reason_theme(reason):
+    """The theme a case reason names, or None for catch-all, team-type and rare reasons."""
+    if reason in THEMES:
+        return reason
+    return next((t for t, d in DUP_LABELS.items() if d == reason), None)
+
+
+def parse(s):
+    return datetime.strptime(s, "%Y-%m-%d %H:%M")
+
+
+def bpick(seq, p=None):
+    return seq[brng.choice(len(seq), p=p)]
+
+
+acc_by_id = {a["id"]: a for a in accounts}
+case_rows = {r["case_id"]: r for r in cases}  # duplicates collapse onto one case
+acc_cases = {a["id"]: [] for a in accounts}
+for r in sorted(case_rows.values(), key=lambda r: (r["created_at"], r["case_id"])):
+    acc_cases[r["account_id"]].append((parse(r["created_at"]), r))
+
+
+def in_window(acc, end):
+    return [(t, r) for t, r in acc_cases[acc] if end < t <= end + WINDOW]
+
+
+def theme_draw(acc):
+    pidx = PRODUCTS.index(acc_by_id[acc]["product"])
+    w = np.array([THEMES[t]["w"][pidx] for t in THEME_NAMES], float)
+    return THEME_NAMES[brng.choice(len(THEME_NAMES), p=w / w.sum())]
+
+
+busy = {a["id"]: [] for a in accounts}  # (start, window end) of bot conversations already placed
+
+
+def free(acc, start, end):
+    return all(end + WINDOW < s or start > e for s, e in busy[acc])
+
+
+bots = []
+
+
+def place(kind, acc, end, intent, follow):
+    start = end - timedelta(minutes=int(brng.integers(2, 16)))
+    if start < START or end > BOT_LAST_END or not free(acc, start, end):
+        return False
+    busy[acc].append((start, end + WINDOW))
+    lag = round((follow[0] - end).total_seconds() / 86400, 3) if follow else ""
+    bots.append(dict(kind=kind, acc=acc, start=start, end=end, intent=intent,
+                     follow=follow[1]["case_id"] if follow else "", lag=lag))
+    return True
+
+
+# Anchored kinds: a bot conversation placed shortly before an existing case.
+all_cases = [(acc, t, r) for acc, lst in acc_cases.items() for t, r in lst]
+for kind in ["handoff", "escalated", "same_theme_7", "same_theme_14", "same_theme_30", "unrelated"]:
+    need, placed, tries = BOT_PLAN[kind], 0, 0
+    while placed < need:
+        tries += 1
+        if tries > 200000:
+            raise SystemExit(f"could not place {need} {kind} bot conversations")
+        acc, t, r = all_cases[brng.integers(len(all_cases))]
+        theme = reason_theme(r["reason"])
+        if theme is None:
+            continue
+        if kind in ("escalated", "handoff") and r["channel"] != "Chat":
+            continue  # a handoff from the bot lands as a chat case
+        lo, hi = LAGS[kind]
+        end = parse(iso(t - timedelta(days=float(brng.uniform(lo, hi)))))
+        win = in_window(acc, end)
+        if kind == "unrelated":
+            themes = {reason_theme(x["reason"]) for _, x in win}
+            if None in themes:
+                continue  # every case in the window must show a readable, different theme
+            intent = theme_draw(acc)
+            if intent in themes:
+                continue
+            follow = win[0]
+        else:
+            if [x["case_id"] for _, x in win] != [r["case_id"]]:
+                continue  # the follow-up must be the only case in the window
+            intent, follow = theme, (t, r)
+        placed += place(kind, acc, end, intent, follow)
+
+# Unanchored kinds: nothing from the account in the 30 days after.
+acc_ids = [a["id"] for a in accounts]
+acc_w = np.array([a["n"] + 1 for a in accounts], float)
+acc_w /= acc_w.sum()
+span = int((BOT_LAST_END - START).total_seconds() // 60)
+for kind in ["reopened", "silence", "abandoned"]:
+    need, placed, tries = BOT_PLAN[kind], 0, 0
+    while placed < need:
+        tries += 1
+        if tries > 200000:
+            raise SystemExit(f"could not place {need} {kind} bot conversations")
+        acc = acc_ids[brng.choice(len(acc_ids), p=acc_w)]
+        end = START + timedelta(minutes=int(brng.integers(60 * 24, span)))
+        if in_window(acc, end):
+            continue
+        placed += place(kind, acc, end, theme_draw(acc), None)
+
+bots.sort(key=lambda b: (b["start"], b["acc"]))
+bot_rows, truth_rows = [], []
+for i, b in enumerate(bots):
+    a = acc_by_id[b["acc"]]
+    linked = [r["case_id"] for _, r in in_window(b["acc"], b["end"])]
+    bid = f"BOT-{i + 1:05d}"
+    bot_rows.append(dict(
+        bot_conversation_id=bid, started_at=iso(b["start"]), ended_at=iso(b["end"]), account_id=a["id"],
+        account_size=a["size"], product=a["product"], intent=b["intent"],
+        customer_message=bpick(THEMES[b["intent"]]["subj"]),
+        claimed_resolved="No" if b["kind"] in NOT_CLAIMED else "Yes",
+        # with-history only
+        reopens=int(brng.integers(1, 3)) if b["kind"] == "reopened" else 0,
+        linked_case_ids=";".join(linked),
+    ))
+    truth_rows.append(dict(
+        bot_conversation_id=bid, planted=b["kind"], claimed_resolved=bot_rows[-1]["claimed_resolved"],
+        audit_snapshot="out_of_scope" if b["kind"] in NOT_CLAIMED else "cant_tell",
+        audit_with_history="out_of_scope" if b["kind"] in NOT_CLAIMED else
+        "contradicted" if b["kind"] in CONTRADICTED else "not_contradicted",
+        follow_up_case_id=b["follow"], lag_days=b["lag"], account_churned="Yes" if a["churned"] else "No",
+    ))
+
+BOT_SNAPSHOT_COLS = ["bot_conversation_id", "started_at", "ended_at", "account_id", "account_size", "product",
+                     "intent", "customer_message", "claimed_resolved"]
+BOT_HISTORY_COLS = BOT_SNAPSHOT_COLS + ["reopens", "linked_case_ids"]
+TRUTH_COLS = ["bot_conversation_id", "planted", "claimed_resolved", "audit_snapshot", "audit_with_history",
+              "follow_up_case_id", "lag_days", "account_churned"]
+write(OUT / "larkspur_bot_snapshot.csv", BOT_SNAPSHOT_COLS, bot_rows)
+write(OUT / "larkspur_bot_with_history.csv", BOT_HISTORY_COLS, bot_rows)
+write(OUT / "larkspur_bot_truth.csv", TRUTH_COLS, truth_rows)
+
+
+def self_check():
+    """Re-derive every label from the written files alone and compare with what was planted."""
+    def read(name):
+        with open(OUT / name, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    snap_cases = {r["case_id"]: r for r in read("larkspur_snapshot.csv")}
+    truth = {r["bot_conversation_id"]: r for r in read("larkspur_bot_truth.csv")}
+    assert "linked_case_ids" not in read("larkspur_bot_snapshot.csv")[0]
+    for b in read("larkspur_bot_with_history.csv"):
+        t = truth[b["bot_conversation_id"]]
+        end = parse(b["ended_at"])
+        expect_links = sorted(
+            (parse(r["created_at"]), cid) for cid, r in snap_cases.items()
+            if r["account_id"] == b["account_id"] and end < parse(r["created_at"]) <= end + WINDOW)
+        links = [snap_cases[c] for c in b["linked_case_ids"].split(";") if c]
+        assert [c for _, c in expect_links] == [r["case_id"] for r in links], b["bot_conversation_id"]
+        same = [r for r in links if reason_theme(r["reason"]) == b["intent"]]
+        if b["claimed_resolved"] == "No":
+            label = "handoff" if same else "abandoned"
+        elif int(b["reopens"]) > 0:
+            label = "reopened"
+        elif same:
+            lag = (parse(same[0]["created_at"]) - end).total_seconds() / 86400
+            label = ("escalated" if lag <= 1 / 24 else "same_theme_7" if lag <= 7
+                     else "same_theme_14" if lag <= 14 else "same_theme_30")
+        else:
+            label = "unrelated" if links else "silence"
+        assert label == t["planted"], (b["bot_conversation_id"], label, t["planted"])
+    for kind, n in BOT_PLAN.items():
+        assert sum(1 for t in truth.values() if t["planted"] == kind) == n, kind
+
+
+self_check()
+
+kinds = [b["kind"] for b in bots]
+claimed = [t for t in truth_rows if t["claimed_resolved"] == "Yes"]
+dup_spelt = sum(1 for b in bots if b["kind"] in CONTRADICTED - {"reopened"}
+                and case_rows[b["follow"]]["reason"] in DUP_LABELS.values())
+stats["bot"] = dict(
+    seed=[SEED, 1],
+    conversations=len(bots),
+    claimed_resolved=len(claimed),
+    not_claimed=dict(handoff=kinds.count("handoff"), abandoned=kinds.count("abandoned")),
+    planted={k: kinds.count(k) for k in BOT_PLAN if k not in NOT_CLAIMED},
+    same_theme_cumulative=dict(
+        within_7=kinds.count("same_theme_7"),
+        within_14=kinds.count("same_theme_7") + kinds.count("same_theme_14"),
+        within_30=kinds.count("same_theme_7") + kinds.count("same_theme_14") + kinds.count("same_theme_30")),
+    follow_ups_with_near_duplicate_reason=dup_spelt,
+    silence_on_churned_accounts=sum(1 for t in truth_rows if t["planted"] == "silence" and t["account_churned"] == "Yes"),
+    expected_audit=dict(
+        snapshot=dict(contradicted=0, not_contradicted=0, cant_tell=len(claimed)),
+        with_history=dict(
+            contradicted=sum(1 for t in claimed if t["audit_with_history"] == "contradicted"),
+            not_contradicted=sum(1 for t in claimed if t["audit_with_history"] == "not_contradicted"),
+            cant_tell=0)),
+)
 (OUT / "generation_stats.json").write_text(json.dumps(stats, indent=2))
 print(json.dumps(stats, indent=2))

@@ -4,5 +4,45 @@
   "accounts_with_cases": 875,
   "cases": 5108,
   "history_rows": 8850,
-  "churned_accounts": 104
+  "churned_accounts": 104,
+  "bot": {
+    "seed": [
+      20261001,
+      1
+    ],
+    "conversations": 1500,
+    "claimed_resolved": 1200,
+    "not_claimed": {
+      "handoff": 210,
+      "abandoned": 90
+    },
+    "planted": {
+      "escalated": 96,
+      "same_theme_7": 84,
+      "same_theme_14": 48,
+      "same_theme_30": 48,
+      "unrelated": 120,
+      "reopened": 72,
+      "silence": 732
+    },
+    "same_theme_cumulative": {
+      "within_7": 84,
+      "within_14": 132,
+      "within_30": 180
+    },
+    "follow_ups_with_near_duplicate_reason": 16,
+    "silence_on_churned_accounts": 92,
+    "expected_audit": {
+      "snapshot": {
+        "contradicted": 0,
+        "not_contradicted": 0,
+        "cant_tell": 1200
+      },
+      "with_history": {
+        "contradicted": 348,
+        "not_contradicted": 852,
+        "cant_tell": 0
+      }
+    }
+  }
 }
