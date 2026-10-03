@@ -27,9 +27,9 @@
     $("#upload-panel").hidden = state.source !== "upload";
     if (!r) return;
     const src = { "demo-snapshot": "Demo company, snapshot export", "demo-history": "Demo company, export with history", upload: "Your export" }[state.source];
-    $("#run-meta").textContent = `${src} · ${r.meta.cases.toLocaleString()} cases${r.meta.history_rows ? ` · ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
+    $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
     renderUses(r); renderFix(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
-    $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}) · engine ${r.meta.engine} · run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
+    $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
   }
 
   function renderUses(r) {
@@ -108,18 +108,18 @@
   }
 
   function renderChecks(r) {
-    const bands = [["C", "Band C · Can it be read?"], ["B", "Band B · Is it faithful?"], ["A", "Band A · Is it fit for use?"]];
+    const bands = [["C", "Can it be read?"], ["B", "Is it faithful?"], ["A", "Is it fit for use?"]];
     $("#checks").innerHTML = bands.map(([b, h]) => {
       const list = Object.values(r.checks).filter((c) => c.band === b);
-      return `<section class="band"><h3>${h}</h3>${list.map((c) => {
+      return `<section class="band"><h3>${h} <span class="band-id">Band ${b}</span></h3>${list.map((c) => {
         const d = checkDef[c.id];
-        const refs = (d.refs || []).map((k) => `<a href="${esc(RULES.refs[k].url)}" target="_blank" rel="noopener">${esc(RULES.refs[k].title)}</a>`).join(" · ");
+        const refs = (d.refs || []).map((k) => `<a href="${esc(RULES.refs[k].url)}" target="_blank" rel="noopener">${esc(RULES.refs[k].title)}</a>`).join(", ");
         return `<details class="chk" id="check-${c.id}"><summary>${chip(c.outcome)}<span class="chk-t">${esc(c.title)}</span><span class="chk-v">${esc(c.display)}</span></summary>
           <div class="chk-body"><p>${esc(c.detail)}</p>
           <dl><dt>Why it matters</dt><dd>${esc(d.why)}</dd><dt>How to fix</dt><dd>${esc(d.fix)}</dd><dt>Measured as</dt><dd>${esc(d.metric)}</dd>
           ${c.threshold ? `<dt>Threshold</dt><dd>${esc(c.threshold)}${d.threshold && d.threshold.provisional ? " (provisional)" : ""}</dd>` : ""}
           ${d.note ? `<dt>Note</dt><dd>${esc(d.note)}</dd>` : ""}
-          ${refs ? `<dt>Sources</dt><dd>${refs}</dd>` : ""}<dt>Rule</dt><dd class="mono">${c.id} · ${esc(d.dimension)}</dd></dl></div></details>`;
+          ${refs ? `<dt>Sources</dt><dd>${refs}</dd>` : ""}<dt>Rule</dt><dd class="mono">${c.id}, ${esc(d.dimension)}</dd></dl></div></details>`;
       }).join("")}</section>`;
     }).join("");
   }

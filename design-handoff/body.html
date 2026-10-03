@@ -1,0 +1,84 @@
+<div class="wrap">
+  <nav class="nav" aria-label="Sections">
+    <a class="mark" href="#top">
+      <svg viewBox="0 0 46 14" aria-hidden="true" fill="currentColor"><circle cx="7" cy="7" r="7"/><path d="M23 0a7 7 0 0 0 0 14z"/><circle cx="23" cy="7" r="6.1" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="39" cy="7" r="6.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3.2 2.6"/></svg>
+      <span>Support Signal</span>
+    </a>
+    <div class="nav-links">
+      <a href="#signals-section">Signals</a>
+      <a href="#drivers">Churn drivers</a>
+      <a href="#checks-section">Checks</a>
+      <a href="#vendor-questions">Vendor questions</a>
+    </div>
+    <a class="pill" href="#try" role="button" data-src="upload">Check your export</a>
+  </nav>
+
+  <header class="top" id="top">
+    <h1>Before you buy the AI, check what you're feeding it.</h1>
+    <p class="lede">Support Signal reads a support case export and tells you which questions it can honestly answer.</p>
+    <div class="source" id="try">
+      <div class="seg" role="group" aria-label="Data to check">
+        <button type="button" data-src="demo-snapshot" aria-pressed="true">Snapshot export</button>
+        <button type="button" data-src="demo-history" aria-pressed="false">Export with history</button>
+        <button type="button" data-src="upload" aria-pressed="false">Your own export</button>
+      </div>
+      <p class="privacy">Runs in your browser. Nothing is uploaded, stored or sent anywhere.</p>
+    </div>
+  </header>
+
+  <section id="upload-panel" class="upload" hidden aria-labelledby="up-h">
+    <div class="section-head"><h2 id="up-h">Check your own data.</h2>
+      <p>Export cases as CSV from your helpdesk. Remove names, emails and any text you don't want analysed first. The file is read by this page only.</p></div>
+    <div class="files">
+      <label for="file-cases">Cases (CSV)<span>One row per case. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
+      <label for="file-history">Change history (optional CSV)<span>Columns: case_id, changed_at, field, old_value, new_value.</span><input type="file" id="file-history" accept=".csv,text/csv"></label>
+    </div>
+    <p class="status" id="upload-status" aria-live="polite">Choose a cases file to begin.</p>
+    <p class="status" id="history-status" aria-live="polite"></p>
+    <div id="mapping"></div>
+    <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
+  </section>
+
+  <div id="report">
+    <section id="summary" class="summary" aria-labelledby="sum-h">
+      <div class="section-head"><h2 id="sum-h">What this data can support</h2><p class="run-meta" id="run-meta"></p></div>
+      <div class="stage"><div class="uses" id="uses"></div></div>
+      <div class="fixfirst"><h3>Fix these first.</h3><ol class="fix" id="fix"></ol></div>
+    </section>
+
+    <section class="sec sec-alt" id="signals-section" aria-labelledby="sig-h">
+      <div class="section-head"><h2 id="sig-h">What it can tell you.</h2>
+        <p>Every signal describes what is happening. None predicts which customers will leave.</p></div>
+      <div class="signals" id="signals"></div>
+    </section>
+
+    <section class="sec sec-black" id="drivers" aria-labelledby="drv-h">
+      <div class="section-head"><h2 id="drv-h">Why most churn drivers aren't.</h2>
+        <p>Busier accounts raise more cases, so almost anything tied to case volume looks like a churn driver. Compare like with like and most of them fall away.</p></div>
+      <div class="drivers">
+        <div class="drivers-bar"><span class="muted">Each row is a flag on an account. Dots further right mean higher odds of churning.</span>
+          <button type="button" class="btn" id="drivers-toggle" aria-pressed="false">Apply controls</button></div>
+        <div id="drivers-body"></div>
+      </div>
+    </section>
+
+    <section class="sec" id="checks-section" aria-labelledby="chk-h">
+      <div class="section-head"><h2 id="chk-h">The checks behind the verdicts.</h2>
+        <p>Each check shows its threshold, why it matters and how to fix it. Provisional thresholds are starting points, not evidence.</p></div>
+      <div id="checks"></div>
+    </section>
+
+    <section class="sec sec-alt" id="vendor-questions" aria-labelledby="ven-h">
+      <div class="section-head"><h2 id="ven-h">Questions for any AI support vendor.</h2></div>
+      <ol class="vendor" id="vendor"></ol>
+    </section>
+
+    <footer>
+      <div class="row"><button type="button" class="btn btn-ghost" id="copy-report">Copy report as JSON</button><span id="copy-status" aria-live="polite"></span></div>
+      <textarea id="report-json" hidden readonly aria-label="Report JSON"></textarea>
+      <p>The demo company, Larkspur, is made up. Its data is fictional, deliberately messy and generated with a fixed seed. Thresholds are provisional.</p>
+      <p id="stamp"></p>
+      <p>Built by Merlin. Support Signal judges readiness per use, after Lawrence's Data Readiness Levels, and names checks after the DAMA data quality dimensions.</p>
+    </footer>
+  </div>
+</div>
