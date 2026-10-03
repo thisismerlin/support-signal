@@ -1,0 +1,65 @@
+# Build the single-page report and publish it to GitHub Pages.
+#
+# dist/ is committed, so the build is also a guard: if the rebuilt page differs
+# from what was committed, someone changed src/ or rules/ without running
+# `npm run build`, and the job fails rather than publishing something that
+# doesn't match the repository.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish; queue one more and drop the rest.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run the checks against the demo data
+        run: npm test
+
+      - name: Build the page
+        run: npm run build
+
+      - name: Fail if dist is stale
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ does not match a fresh build. Run 'npm run build' and commit the result."
+            git diff --stat -- dist
+            exit 1
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
