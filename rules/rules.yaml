@@ -10,7 +10,7 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.5.0
+  version: 0.6.0
   status: draft
   updated: 2026-10-03
   outcomes:
@@ -34,34 +34,34 @@ team_words: ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue
 # the bot field bot_reopens in a bot export, and what stops a case export's
 # `conversation_id` being absorbed by bot_conversation_id.
 fields:
-  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber, conversation id] }
+  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber, conversation id, hs object id, issue key, ticket key] }
   created_at:      { label: Created, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
-  closed_at:       { label: Closed, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate] }
-  status:          { label: Status, required: true, synonyms: [status, state] }
-  owner:           { label: Owner, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid] }
-  group:           { label: Group or queue, synonyms: [group, queue, team, department] }
-  reason:          { label: Contact reason, synonyms: [reason, category, case reason, contact reason, disposition, type, topic] }
+  closed_at:       { label: Closed, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate, resolution date, resolutiondate] }
+  status:          { label: Status, required: true, synonyms: [status, state, hs pipeline stage] }
+  owner:           { label: Owner, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid, assignee id, responder id, admin assignee id] }
+  group:           { label: Group or queue, synonyms: [group, queue, team, department, group id, team assignee id] }
+  reason:          { label: Contact reason, synonyms: [reason, category, case reason, contact reason, disposition, type, topic, hs ticket category] }
   subject:         { label: Subject, synonyms: [subject, title, summary] }
-  description:     { label: Description, synonyms: [description, body, first message, details] }
+  description:     { label: Description, synonyms: [description, body, first message, details, description text, content] }
   # `file: both`: the bot export carries account, account size and product columns
   # with the same meaning as the case export's, so they are reused rather than
   # duplicated as bot_* fields. B11 reads account_id off the bot file to tell its
   # warn case (account plus timings) from not_in_export.
-  account_id:      { label: Account, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid] }
+  account_id:      { label: Account, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid, organization id, company id] }
   account_size:    { label: Account size, file: both, synonyms: [account size, size, tier, plan, seats band, segment size] }
   segment:         { label: Product or segment, file: both, synonyms: [product, segment, product line, region] }
   channel:         { label: Channel, synonyms: [channel, origin, via, source] }
-  priority:        { label: Priority, synonyms: [priority, severity] }
+  priority:        { label: Priority, synonyms: [priority, severity, hs ticket priority] }
   reopen_count:    { label: Reopens, synonyms: [reopens, reopen count, times reopened] }
   follow_up_of:    { label: Follow-up of, synonyms: [follow up of, follow-up of, parent case, related case] }
-  escalated:       { label: Escalated flag, synonyms: [escalated, is escalated, isescalated] }
+  escalated:       { label: Escalated flag, synonyms: [escalated, is escalated, isescalated, fr escalated] }
   owner_changes:   { label: Owners count, synonyms: [owner changes, assignee stations, assignees, owner count] }
   group_changes:   { label: Groups count, synonyms: [group changes, group stations, groups, queue changes] }
   wait_time:       { label: Customer wait time, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes] }
   resolution_note: { label: Resolution note, synonyms: [resolution, resolution note, solution, resolution notes, close notes] }
   linked_article:  { label: Linked article, synonyms: [article, linked article, kb article, macro, knowledge article] }
-  last_update_at:  { label: Last update, synonyms: [last update, last updated, last public update, updated at, last modified] }
-  csat_score:      { label: CSAT score, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating] }
+  last_update_at:  { label: Last update, synonyms: [last update, last updated, last public update, updated at, last modified, updated] }
+  csat_score:      { label: CSAT score, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating] }
   churned:         { label: Churned, synonyms: [churned, churn, cancelled, lost] }
   exit_event:      { label: Exit event, synonyms: [exit event, cancellation, deregistration] }
 
@@ -409,6 +409,21 @@ resolution_audit:
     follow-up case appeared in the window: the customer may have given up, gone
     elsewhere, or left. Never report it as a resolution rate.
 
+# Where the vendor column names in `fields` synonyms came from. Each name was read
+# from the page named here, not recalled. A vendor missing from this list is a vendor
+# whose names we could not read: better an honest gap than a plausible invention.
+column_name_sources:
+  zendesk: zendesk-ticket-object
+  freshdesk: freshdesk-api
+  intercom: intercom-conversation
+  hubspot: hubspot-tickets
+  jira_service_management: jira-issue-fields
+  # Salesforce is deliberately absent. developer.salesforce.com returns 403 to
+  # automated fetches and help.salesforce.com renders its field tables in JavaScript,
+  # so the Case object's field list could not be read. The normaliser handles
+  # Salesforce's shapes anyway (CaseNumber, CreatedDate, Priority__c, Date/Time
+  # Opened all map correctly); only the vendor-specific synonyms are missing.
+
 vendor_questions:
   - How do you define a resolution, and how do you count reopens?
   - Do you report containment separately from resolution?
@@ -434,5 +449,10 @@ refs:
   intercom-content: { title: "Intercom, optimising content for Fin", url: "https://www.intercom.com/help/en/articles/7860255-optimizing-content-for-fin" }
   agentforce-knowledge: { title: "Salesforce, Agentforce and Knowledge", url: "https://help.salesforce.com/s/articleView?id=004333412&language=en_US&type=1" }
   forethought-faq: { title: "Forethought FAQ", url: "https://forethought.ai/faq" }
+  zendesk-ticket-object: { title: "Zendesk, Ticket object reference", url: "https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/" }
+  freshdesk-api: { title: "Freshdesk, API reference (Tickets)", url: "https://developers.freshdesk.com/api/" }
+  intercom-conversation: { title: "Intercom, Conversation object reference", url: "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation" }
+  hubspot-tickets: { title: "HubSpot, Tickets API guide", url: "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide" }
+  jira-issue-fields: { title: "Atlassian, Jira expressions type reference (Issue)", url: "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/" }
   mazor-response-bias: { title: "Mazor et al., survey response bias", url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC1464019/" }
   catalog-confounding: { title: "Catalog of Bias, confounding", url: "https://catalogofbias.org/biases/confounding/" }

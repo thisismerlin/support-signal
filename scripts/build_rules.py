@@ -28,6 +28,9 @@ for scope in ("case", "bot"):
             if seen.get(s, k) != k:
                 errs.append(f"synonym {s!r} claimed by both {seen[s]} and {k} in {scope} files")
             seen[s] = k
+# Every vendor we claim to have sourced column names from must point at a real ref.
+errs += [f"column_name_sources {v} -> {k}" for v, k in r.get("column_name_sources", {}).items()
+         if k not in r["refs"]]
 # The engine reads these by name; a rename here must not fail silently at runtime.
 params = r.get("resolution_audit", {}).get("params", {})
 errs += [f"resolution_audit.params missing {p}" for p in
