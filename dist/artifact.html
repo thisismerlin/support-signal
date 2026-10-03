@@ -17436,23 +17436,118 @@ function parseCSV(text) {
 }
 
 // ---------- column mapping ----------
+// Real exports don't use our names. Matching is three steps: normalise a header into
+// a small set of plausible forms, score every field/header pair, then assign the best
+// scores first so one column can never serve two fields.
+
 const norm = (s) => String(s).toLowerCase().replace(/[_\-]+/g, " ").replace(/\s+/g, " ").trim();
 
-// Which fields a file's headers are offered. A field's `file:` is "case"
-// (the default), "bot" or "both"; one call maps one file, so the two sets never
-// share a namespace and the same header can mean a different field in each.
+// Leading words that describe the column's type rather than its meaning. Stripped only
+// as an *extra* candidate, never in place of the full form, so "date closed" can still
+// match closed_at by its full name.
+const LEAD_NOISE = ["date time", "datetime", "date", "time", "ticket", "case", "custom field", "field"];
+
+// "CreatedDate" -> "Created Date"; "CSATScore" -> "CSAT Score"; "caseId" -> "case Id".
+// The first branch keeps acronyms whole by splitting only before the last capital of a run.
+const splitCamel = (s) => String(s)
+  .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+  .replace(/([a-z\d])([A-Z])/g, "$1 $2");
+
+// Every form of a header worth matching on. Order is irrelevant; membership is what counts.
+function headerVariants(raw) {
+  let s = String(raw ?? "").replace(/^﻿/, "").trim();
+  s = s.replace(/__c$/i, "");            // Salesforce custom field suffix
+  s = s.replace(/^[A-Za-z0-9]+__(?=[A-Za-z])/, ""); // Salesforce namespace prefix
+  const base = norm(splitCamel(s).replace(/[\/.:#()\[\]{}|,;*"'`~!?+=<>%$@^&]+/g, " "));
+  const out = new Set();
+  if (base) out.add(base);
+  // Drop a type-ish leading word: "date time opened" -> "opened".
+  for (const lead of LEAD_NOISE) {
+    if (base.startsWith(lead + " ")) {
+      const rest = base.slice(lead.length + 1).trim();
+      if (rest) out.add(rest);
+    }
+  }
+  // Drop a trailing unit or qualifier: "customer wait mins" -> "customer wait".
+  const tail = base.replace(/\s+(mins?|minutes?|hrs?|hours?|days?|secs?|seconds?|utc|gmt|local|id)$/,"").trim();
+  if (tail && tail !== base) out.add(tail);
+  return [...out];
+}
+
+const tokens = (s) => s.split(" ").filter(Boolean);
+const dice = (a, b) => {
+  const A = new Set(a), B = new Set(b);
+  let hit = 0;
+  for (const t of A) if (B.has(t)) hit++;
+  return (2 * hit) / (A.size + B.size);
+};
+
+// How well one candidate name fits one header variant. 0 means no relationship.
+function scorePair(cand, variant) {
+  if (!cand || !variant) return 0;
+  if (cand === variant) return 100;
+  const c = tokens(cand), v = tokens(variant);
+  const cs = new Set(c), vs = new Set(v);
+  if (cs.size === vs.size && [...cs].every((t) => vs.has(t))) return 80;   // same words, any order
+  const sub = [...cs].every((t) => vs.has(t)) || [...vs].every((t) => cs.has(t));
+  if (sub) return 68;                                                       // one contains the other
+  const d = dice(c, v);
+  return d >= 0.5 ? Math.round(40 + d * 25) : 0;                            // partial overlap
+}
+
+const NAME_FLOOR = 45;       // below this, a name match is a coincidence, not a match
 const inScope = (f, scope) => { const s = f.file || "case"; return s === scope || s === "both"; };
 
-function autoMap(headers, rules, scope = "case") {
-  const map = {};
-  const used = new Set();
-  for (const [key, f] of Object.entries(rules.fields)) {
-    if (!inScope(f, scope)) continue;
-    const cands = [key.replace(/_/g, " "), ...(f.synonyms || [])].map(norm);
-    const hit = headers.find((h) => !used.has(h) && cands.includes(norm(h)));
-    if (hit) { map[key] = hit; used.add(hit); }
+// The full result: the map, plus how each field was matched and how strongly.
+function mapColumns({ headers, rules, scope = "case", records = null }) {
+  const fields = Object.entries(rules.fields).filter(([, f]) => inScope(f, scope));
+  const order = Object.fromEntries(fields.map(([k], i) => [k, i]));
+  const hv = new Map(headers.map((h) => [h, headerVariants(h)]));
+
+  // Score every pair once.
+  const pairs = [];
+  for (const [key, f] of fields) {
+    const cands = [key.replace(/_/g, " "), ...(f.synonyms || [])].flatMap((c) => headerVariants(c));
+    for (const h of headers) {
+      let best = 0;
+      for (const c of cands) for (const v of hv.get(h)) {
+        const sc = scorePair(c, v);
+        if (sc > best) best = sc;
+      }
+      if (best >= NAME_FLOOR) pairs.push({ key, header: h, score: best });
+    }
   }
-  return map;
+  // Best first, then stable by field order and header order, so the result never
+  // depends on object iteration luck.
+  pairs.sort((a, b) => b.score - a.score || order[a.key] - order[b.key]
+    || headers.indexOf(a.header) - headers.indexOf(b.header));
+
+  const map = {}, confidence = {}, scores = {};
+  const usedHeader = new Set();
+  for (const p of pairs) {
+    if (map[p.key] || usedHeader.has(p.header)) continue;   // one field, one column, each way
+    map[p.key] = p.header; usedHeader.add(p.header);
+    confidence[p.key] = "name"; scores[p.key] = p.score;
+  }
+
+  // Anything still unmatched may be inferable from what the column contains.
+  if (records && records.length) {
+    const guessed = inferFromValues({ fields, headers, records, map, usedHeader });
+    for (const [key, header] of Object.entries(guessed)) {
+      map[key] = header; usedHeader.add(header);
+      confidence[key] = "guess"; scores[key] = null;
+    }
+  }
+  return { map, confidence, scores };
+}
+
+// Inference from column values. Filled in by the next commit; until then nothing is
+// guessed, which is the safe direction: a missing mapping is visible, a wrong one isn't.
+function inferFromValues() { return {}; }
+
+// Backwards compatible: the plain {field: header} map the engine and the page use.
+function autoMap(headers, rules, scope = "case") {
+  return mapColumns({ headers, rules, scope }).map;
 }
 
 // ---------- helpers ----------

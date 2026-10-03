@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, runAudit, evalThreshold, nearDuplicate } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
@@ -143,6 +143,61 @@ test("a case file whose only ID column is conversation_id maps to case_id", () =
   const report = runAudit({ records, mapping, rules });
   assert.equal(report.checks.C1.outcome, "pass");
   assert.equal(report.checks.C4.outcome, expected.snapshot.checks.C4, "the ID still drives duplicate detection");
+});
+
+// ----------------------------------------------------------- column name matching
+const HEADERS = JSON.parse(readFileSync(new URL("./fixtures/headers.json", import.meta.url))).cases;
+
+for (const [name, c] of Object.entries(HEADERS)) {
+  test(`headers ${name}: maps as expected`, () => {
+    assert.deepEqual(mapColumns({ headers: c.headers, rules }).map, c.expect);
+  });
+}
+
+// A header can mean one thing. Two fields sharing a column would double-count it.
+test("no column is ever mapped to two fields", () => {
+  for (const [name, c] of Object.entries(HEADERS)) {
+    const used = Object.values(mapColumns({ headers: c.headers, rules }).map);
+    assert.equal(new Set(used).size, used.length, name);
+  }
+});
+
+// Scoring must not depend on the order headers happen to arrive in.
+test("matching does not depend on header order", () => {
+  for (const [name, c] of Object.entries(HEADERS)) {
+    const forward = mapColumns({ headers: c.headers, rules }).map;
+    const back = mapColumns({ headers: [...c.headers].reverse(), rules }).map;
+    assert.deepEqual(back, forward, name);
+  }
+});
+
+test("header normalisation produces the forms we match on", () => {
+  const has = (raw, want) => assert.ok(headerVariants(raw).includes(want), `${raw} -> ${want}, got ${JSON.stringify(headerVariants(raw))}`);
+  has("CreatedDate", "created date");
+  has("caseId", "case id");
+  has("CSATScore", "csat score");
+  has("Priority__c", "priority");
+  has("Date/Time Opened", "opened");
+  has("Date/Time Opened", "date time opened");
+  has("Cust. Wait (mins)", "cust wait");
+  has("ticket.status", "status");
+});
+
+// ------------------------------------------------------- the demo mapping is pinned
+// A better column matcher must not quietly remap the demo exports. If it does, every
+// expected verdict in expected.json is measuring something other than it used to.
+const PIN = JSON.parse(readFileSync(new URL("./fixtures/demo-mapping.json", import.meta.url))).demo;
+const SNAPSHOT_DROP = ["reopens", "assignee_stations", "group_stations", "requester_wait_minutes"];
+
+test("the demo exports map exactly as pinned", () => {
+  const wh = load("larkspur_with_history.csv");
+  const got = {
+    "larkspur_snapshot (history cols dropped)": autoMap(wh.headers.filter((h) => !SNAPSHOT_DROP.includes(h)), rules),
+    "larkspur_with_history": autoMap(wh.headers, rules),
+    larkspur_bot_snapshot: autoMap(load("larkspur_bot_snapshot.csv").headers, rules, "bot"),
+    larkspur_bot_with_history: autoMap(load("larkspur_bot_with_history.csv").headers, rules, "bot"),
+  };
+  for (const [file, want] of Object.entries(PIN)) assert.deepEqual(got[file], want, file);
 });
 
 // ----------------------------------------------------------- B11 and the audit

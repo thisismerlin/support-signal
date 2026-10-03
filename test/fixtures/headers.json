@@ -1,0 +1,30 @@
+{
+  "_": "Header-only fixtures. Each case lists the column names a file might arrive with and the mapping they must produce. Platform fixtures carry the documentation they were taken from in source_url.",
+  "cases": {
+    "awkward": {
+      "_": "Deliberately awkward names: punctuation, units, casing, trailing colons, dotted paths. Not any vendor's export.",
+      "headers": ["Ticket ID #", "CREATED (UTC)", "Closed_On", "ticket.status", "Assigned To:", "Cust. Wait (mins)"],
+      "expect": {
+        "case_id": "Ticket ID #",
+        "created_at": "CREATED (UTC)",
+        "closed_at": "Closed_On",
+        "status": "ticket.status",
+        "owner": "Assigned To:",
+        "wait_time": "Cust. Wait (mins)"
+      }
+    },
+    "camel_case": {
+      "_": "camelCase API names, which the old exact matcher missed almost entirely.",
+      "headers": ["caseId", "createdAt", "closedAt", "status", "assigneeId", "groupId", "satisfactionRating"],
+      "expect": {
+        "case_id": "caseId",
+        "created_at": "createdAt",
+        "closed_at": "closedAt",
+        "status": "status",
+        "owner": "assigneeId",
+        "group": "groupId",
+        "csat_score": "satisfactionRating"
+      }
+    }
+  }
+}
