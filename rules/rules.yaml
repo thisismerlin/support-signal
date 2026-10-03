@@ -10,9 +10,9 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.2.0
+  version: 0.3.0
   status: draft
-  updated: 2026-10-01
+  updated: 2026-10-03
   outcomes:
     pass: { label: Green, text: The data supports this. }
     warn: { label: Amber, text: Usable with care. The reason says what to watch. }
@@ -51,6 +51,34 @@ fields:
   csat_score:      { label: CSAT score, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating] }
   churned:         { label: Churned, synonyms: [churned, churn, cancelled, lost] }
   exit_event:      { label: Exit event, synonyms: [exit event, cancellation, deregistration] }
+
+  # Bot conversation fields, for the resolution audit. Tagged `file: bot`;
+  # every field above is a case field.
+  #
+  # STEP 3 MUST SCOPE autoMap BY FILE TYPE: bot synonyms tried only against the
+  # bot file, case synonyms only against case files. Today autoMap walks every
+  # field in insertion order and the first match wins, so the two sets share one
+  # namespace. Two consequences, both fixed by scoping and by nothing else:
+  #   - A case export with a `conversation_id` column is absorbed by
+  #     bot_conversation_id. No case field loses its column, but the column is
+  #     filed as a bot field.
+  #   - A bot file's `reopens` column is read as the case field reopen_count, so
+  #     a bot file loaded as cases reports B6 amber. The synonym can't simply be
+  #     moved: the demo case exports also have a column named `reopens`.
+  # These fields are ordered after the case fields so a case field always wins
+  # the first-match race. That is a stopgap, not the fix.
+  bot_conversation_id:  { label: Bot conversation ID, file: bot, synonyms: [bot conversation id, conversation id, bot chat id, chat id, session id] }
+  bot_started_at:       { label: Bot conversation started, file: bot, synonyms: [started at, bot started at, conversation started at] }
+  bot_ended_at:         { label: Bot conversation ended, file: bot, synonyms: [ended at, bot ended at, conversation ended at] }
+  bot_intent:           { label: Bot intent, file: bot, synonyms: [intent, bot intent, detected intent, detected theme] }
+  bot_claimed_resolved: { label: Bot claimed resolved, file: bot, synonyms: [claimed resolved, bot claimed resolved, claimed resolution] }
+  # Deliberately excludes "follow up of", "parent case" and "related case": those
+  # belong to the case field follow_up_of, which check B6 reads. A bot link column
+  # must never win that header, in either direction.
+  bot_linked_cases:     { label: Linked cases, file: bot, synonyms: [linked case ids, linked cases, linked case id, bot linked cases] }
+  # The bot file's account, account size and product columns are the case fields
+  # account_id, account_size and segment. Same meaning, so they are reused rather
+  # than duplicated; a second field claiming "account id" would collide.
 
 checks:
   - id: C1
@@ -267,6 +295,21 @@ checks:
     fix: Ask each vendor for its minimum before a pilot.
     refs: [forethought-faq]
 
+  - id: B11
+    band: B
+    dimension: completeness
+    title: Bot conversations can be linked to later cases
+    failure_title: Bot conversations aren't linked to later cases
+    metric: Follow-up case IDs on each conversation (green); account plus conversation start and end times, so returns have to be matched (amber); neither in the export (not in export)
+    why: The audit asks what happened after the bot claimed a resolution. Without a way to reach from a conversation to the cases that followed it, a claimed resolution can't be confirmed or contradicted, and silence can't be told apart from success.
+    fix: Export the follow-up case IDs on each conversation. Failing that, export the account ID with the conversation's start and end times, which lets returns be matched by account and timing.
+    refs: [zendesk-follow-up, dama-nl]
+    outcomes:
+      pass: Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.
+      warn: Conversations carry an account and timings but no case links, so returns have to be matched by account and timing. Matching is an inference, and near-simultaneous cases can be attributed to the wrong conversation.
+      not_in_export: This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files.
+    note: Outcome wording is here for step 3. This engine version doesn't run B11.
+
 uses:
   - id: resolution
     title: Resolution time analysis
@@ -288,6 +331,10 @@ uses:
     title: AI self-help readiness
     required: [AI1, AI2, AI4]
     optional: [AI3, AI5, AI6, B2, B3]
+  - id: resolution_audit
+    title: Did the bot's claimed resolutions hold?
+    required: [B11]
+    optional: []
 
 signals:
   - id: slow_passed
@@ -327,6 +374,21 @@ signals:
     unlocked_by_uses: [ai, transfers]
     shows: Reasons with long resolution times or many owners
     disclaimer: Where automation is most likely to frustrate customers.
+
+# Parameters for the resolution audit. Read by step 3; nothing runs them yet.
+# Every value is provisional: a starting point to calibrate against real bot
+# exports, not evidence. Don't quote them publicly.
+resolution_audit:
+  params:
+    provisional: true
+    return_windows_days: [7, 14, 30]   # same-theme return counted cumulatively
+    escalation_within_minutes: 60      # a human case this soon after the bot ended is an escalation, not a return
+    return_starts_after_hours: 12      # returns are only counted from here on, so escalations can't be double-counted
+    normalise_reasons: true            # same-theme matching must fold near-duplicate reasons ("Login Issues", "Single sign-on") to their base theme, or real returns are missed
+  disclaimer: >-
+    "Not contradicted" means silence, not success. It records only that no
+    follow-up case appeared in the window: the customer may have given up, gone
+    elsewhere, or left. Never report it as a resolution rate.
 
 vendor_questions:
   - How do you define a resolution, and how do you count reopens?

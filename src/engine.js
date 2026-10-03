@@ -300,6 +300,10 @@ export function runAudit({ records, mapping, history = null, rules, source = "up
   set("AI6", u >= 20000 && perMonth >= 2000 ? "pass" : "warn", u, `${u.toLocaleString()} cases`,
     `${u.toLocaleString()} cases, about ${Math.round(perMonth).toLocaleString()} email or chat a month. Forethought publishes 20,000+ historical and 2,000+ a month; most vendors publish nothing, so ask.`);
 
+  // Checks defined in the rules but not computed by this engine version (B11, the
+  // resolution audit). Without an entry here the uses loop below dereferences undefined.
+  for (const c of rules.checks) if (!R[c.id]) set(c.id, "needs_human", null, "Not yet", "This engine version doesn't run this check yet.");
+
   // ---------- uses ----------
   const rank = { pass: 0, warn: 1, needs_human: 1, fail: 2, not_in_export: 2 };
   const uses = rules.uses.map((us) => {
