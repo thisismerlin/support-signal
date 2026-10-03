@@ -7,13 +7,14 @@ import { parseCSV, autoMap, runAudit, evalThreshold, nearDuplicate } from "../sr
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
+const stats = JSON.parse(readFileSync(new URL("../data/generation_stats.json", import.meta.url)));
 const load = (f) => parseCSV(readFileSync(new URL(`../data/${f}`, import.meta.url), "utf8"));
 
-function audit(which, bot = null) {
+function audit(which, bot = null, withRules = rules) {
   const { headers, records } = load(which === "snapshot" ? "larkspur_snapshot.csv" : "larkspur_with_history.csv");
   const history = which === "snapshot" ? null : load("larkspur_history_log.csv").records;
-  const mapping = autoMap(headers, rules);
-  return { report: runAudit({ records, mapping, history, bot, rules }), headers, mapping };
+  const mapping = autoMap(headers, withRules);
+  return { report: runAudit({ records, mapping, history, bot, rules: withRules }), headers, mapping };
 }
 // A bot conversations export is mapped in bot scope, never case scope.
 function botFile(f) {
@@ -110,4 +111,132 @@ test("a case file whose only ID column is conversation_id maps to case_id", () =
   const report = runAudit({ records, mapping, rules });
   assert.equal(report.checks.C1.outcome, "pass");
   assert.equal(report.checks.C4.outcome, expected.snapshot.checks.C4, "the ID still drives duplicate detection");
+});
+
+// ----------------------------------------------------------- B11 and the audit
+
+const truthByConversation = () => new Map(load("larkspur_bot_truth.csv").records.map((t) => [t.bot_conversation_id, t]));
+const B11 = rules.checks.find((c) => c.id === "B11");
+
+for (const [which, f] of Object.entries(BOT_FILES)) {
+  const bot = botFile(f);
+  const { report } = audit("snapshot", bot);
+  const want = expected.bot[which];
+  const a = report.resolution_audit;
+
+  test(`bot ${which}: B11 is ${want.B11}`, () => assert.equal(report.checks.B11.outcome, want.B11, report.checks.B11.detail));
+  test(`bot ${which}: B11 reports the rules' own wording`, () => assert.equal(report.checks.B11.detail, B11.outcomes[want.B11]));
+  test(`bot ${which}: use resolution_audit is ${want.use}`, () =>
+    assert.equal(report.uses.find((u) => u.id === "resolution_audit").outcome, want.use));
+  test(`bot ${which}: audit works from ${want.basis}`, () => assert.equal(a.basis, want.basis));
+
+  test(`bot ${which}: totals match generation_stats.json`, () => {
+    const e = stats.bot.expected_audit[which];
+    assert.deepEqual(a.buckets, { contradicted: e.contradicted, not_contradicted: e.not_contradicted, cant_tell: e.cant_tell });
+    assert.equal(a.claimed, stats.bot.claimed_resolved);
+    assert.equal(a.out_of_scope, stats.bot.not_claimed.handoff + stats.bot.not_claimed.abandoned);
+    assert.equal(a.conversations, stats.bot.conversations);
+  });
+
+  test(`bot ${which}: every conversation lands in its planted bucket`, () => {
+    const T = truthByConversation();
+    const key = which === "snapshot" ? "audit_snapshot" : "audit_with_history";
+    const wrong = a.by_conversation
+      .filter((c) => T.get(c.id)[key] !== c.bucket)
+      .map((c) => `${c.id} (${T.get(c.id).planted}): want ${T.get(c.id)[key]}, got ${c.bucket}`);
+    assert.deepEqual(wrong, []);
+    assert.equal(a.by_conversation.length, stats.bot.claimed_resolved, "only claimed conversations are judged");
+  });
+
+  test(`bot ${which}: no link goes unresolved and no theme unread`, () => {
+    assert.equal(a.unresolved_links, 0);
+    assert.equal(a.unreadable_theme_cases, 0);
+  });
+}
+
+// The link path, in detail. Only the with-history bot export has case links.
+{
+  const bot = botFile(BOT_FILES.with_history);
+  const a = audit("snapshot", bot).report.resolution_audit;
+  const p = stats.bot.planted, cum = stats.bot.same_theme_cumulative;
+  const immediate = p.reopened + p.escalated; // both happen at once, so they fall in every window
+
+  test("contradicted is reported cumulatively at 7, 14 and 30 days", () => {
+    assert.deepEqual(a.contradicted_cumulative, [
+      { days: 7, contradicted: immediate + cum.within_7 },
+      { days: 14, contradicted: immediate + cum.within_14 },
+      { days: 30, contradicted: immediate + cum.within_30 },
+    ]);
+    assert.equal(a.contradicted_cumulative.at(-1).contradicted, a.buckets.contradicted);
+  });
+
+  test("each contradiction is attributed to the planted reason", () => {
+    assert.deepEqual(a.contradicted_by, { reopened: p.reopened, escalated: p.escalated, same_theme: cum.within_30 });
+  });
+
+  test(`the ${p.unrelated} unrelated repeat contacts are not contradicted`, () => {
+    const T = truthByConversation();
+    const un = a.by_conversation.filter((c) => T.get(c.id).planted === "unrelated");
+    assert.equal(un.length, p.unrelated);
+    assert.deepEqual([...new Set(un.map((c) => c.bucket))], ["not_contradicted"]);
+  });
+
+  test("every near-duplicate follow-up is matched, not missed", () => {
+    const T = truthByConversation();
+    const reason = new Map(load("larkspur_snapshot.csv").records.map((c) => [c.case_id, c.reason]));
+    const intent = new Map(load(BOT_FILES.with_history).records.map((b) => [b.bot_conversation_id, b.intent]));
+    const conv = new Map(a.by_conversation.map((c) => [c.id, c]));
+    // A planted follow-up whose reason isn't spelled the way the bot's intent is.
+    const nd = [...T.values()].filter((t) => t.audit_with_history === "contradicted" && t.follow_up_case_id &&
+      reason.get(t.follow_up_case_id) !== intent.get(t.bot_conversation_id));
+    const E = expected.resolution_audit;
+    assert.equal(nd.length, E.near_duplicate_follow_ups);
+    assert.deepEqual([...new Set(nd.map((t) => conv.get(t.bot_conversation_id).bucket))], ["contradicted"]);
+    const why = nd.map((t) => conv.get(t.bot_conversation_id).why);
+    assert.equal(why.filter((w) => w === "same_theme").length, E.near_duplicate_follow_ups_matched_by_theme);
+    assert.equal(why.filter((w) => w === "escalated").length, E.near_duplicate_follow_ups_matched_by_timing);
+  });
+
+  test("normalising reasons is what recovers the near-duplicate returns", () => {
+    const plain = JSON.parse(JSON.stringify(rules));
+    plain.resolution_audit.params.normalise_reasons = false;
+    const got = audit("snapshot", bot, plain).report.resolution_audit.buckets.contradicted;
+    const E = expected.resolution_audit;
+    assert.equal(got, E.contradicted_without_normalising);
+    assert.equal(a.buckets.contradicted - got, E.near_duplicate_follow_ups_matched_by_theme);
+  });
+}
+
+// The escalation and return windows are adjacent. Planted lags sit well clear of
+// the boundary, so this one is hand-built to land in it.
+test("a same-theme case three hours after the bot ended is contradicted", () => {
+  const cases = parseCSV([
+    "case_id,created_at,closed_at,status,reason,account_id",
+    "LS-1,2026-01-01 12:00,2026-01-02 12:00,Solved,Login Issues,ACC-1",   // same theme, near-duplicate spelling
+    "LS-2,2026-01-01 12:00,2026-01-02 12:00,Solved,Billing question,ACC-2", // different theme
+    "LS-3,2026-01-01 09:30,2026-01-02 09:30,Solved,Billing question,ACC-3", // 30 minutes: a handover
+  ].join("\n"));
+  const conversations = parseCSV([
+    "bot_conversation_id,started_at,ended_at,account_id,intent,claimed_resolved,linked_case_ids",
+    "BOT-1,2026-01-01 08:30,2026-01-01 09:00,ACC-1,Login issue,Yes,LS-1",
+    "BOT-2,2026-01-01 08:30,2026-01-01 09:00,ACC-2,Login issue,Yes,LS-2",
+    "BOT-3,2026-01-01 08:30,2026-01-01 09:00,ACC-3,Login issue,Yes,LS-3",
+  ].join("\n"));
+  const report = runAudit({
+    records: cases.records, mapping: autoMap(cases.headers, rules), rules,
+    bot: { records: conversations.records, mapping: autoMap(conversations.headers, rules, "bot") },
+  });
+  assert.equal(report.checks.B11.outcome, "pass");
+  const c = Object.fromEntries(report.resolution_audit.by_conversation.map((x) => [x.id, x]));
+  assert.equal(c["BOT-1"].bucket, "contradicted", "three hours is past the escalation window, so it is a return");
+  assert.equal(c["BOT-1"].why, "same_theme");
+  assert.equal(c["BOT-2"].bucket, "not_contradicted", "a different theme at three hours is just another case");
+  assert.equal(c["BOT-3"].why, "escalated", "inside the escalation window, theme isn't asked");
+});
+
+test("the engine reads no files, least of all the answer key", () => {
+  const src = readFileSync(new URL("../src/engine.js", import.meta.url), "utf8");
+  assert.match(src, /^\/\/ Support Signal engine/, "wrong file");
+  for (const forbidden of [/larkspur_bot_truth/, /generation_stats/, /node:fs/, /readFileSync/, /\bfetch\s*\(/, /\brequire\s*\(/])
+    assert.doesNotMatch(src, forbidden);
 });

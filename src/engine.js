@@ -63,6 +63,7 @@ export function parseDate(v) {
   return Number.isNaN(t) ? null : t;
 }
 const DAY = 86400000;
+const MINUTE = 60000;
 
 // Reason and theme matching, shared by B3, which reports near-duplicate reason
 // pairs, and the resolution audit, which has to fold those same pairs to one
@@ -76,6 +77,8 @@ export function nearDuplicate(x, y) {
     (x.length <= 5 && x.toLowerCase() === acronym(y)) ||
     (y.length <= 5 && y.toLowerCase() === acronym(x));
 }
+const plainEqual = (x, y) => String(x).trim().toLowerCase().replace(/\s+/g, " ") === String(y).trim().toLowerCase().replace(/\s+/g, " ");
+const sameTheme = (a, b, normalise) => (normalise ? nearDuplicate(a, b) : plainEqual(a, b));
 
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const quantile = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
@@ -332,6 +335,9 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
   // entry here the uses loop below dereferences undefined.
   for (const c of rules.checks) if (!R[c.id]) set(c.id, "needs_human", null, "Not yet", "This engine version doesn't run this check yet.");
 
+  // ---------- the resolution audit ----------
+  const resolution_audit = resolutionAudit({ bot, botRows, U, byIdKey: has("case_id"), rules, outcome: R.B11.outcome, real });
+
   // ---------- uses ----------
   // A use may need a file beyond the case export. It still reports its verdict
   // when that file is absent, so the question stays visible, but it is left out of
@@ -369,9 +375,102 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
     meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status, source,
       rows: n, cases: u, history_rows: history ? history.length : 0, bot_rows: botRows.length,
       generated: new Date().toISOString() },
-    checks: R, uses, signals, fixFirst, drivers,
+    checks: R, uses, signals, fixFirst, drivers, resolution_audit,
     vendor_questions: rules.vendor_questions,
   };
+}
+
+// ---------- the resolution audit ----------
+// For conversations the bot claimed it resolved, what happened next? Three answers
+// only: contradicted, not contradicted, and can't tell. "Not contradicted" is
+// silence, never success; the disclaimer carried in the result says so.
+//
+// Every parameter comes from rules.resolution_audit.params. There is deliberately
+// no parameter for where returns begin: they begin where the escalation window
+// ends, so no same-theme case can land between the two and be banked as silence.
+function resolutionAudit({ bot, botRows, U, byIdKey, rules, outcome, real }) {
+  const spec = rules.resolution_audit || {};
+  const P = spec.params;
+  if (!P) return { available: false, reason: "The rules carry no resolution_audit parameters." };
+  const windows = [...P.return_windows_days].sort((a, b) => a - b);
+  const escMs = P.escalation_within_minutes * MINUTE;
+  const maxMs = windows[windows.length - 1] * DAY;
+  const normalise = !!P.normalise_reasons;
+  const base = {
+    available: true,
+    basis: outcome === "pass" ? "case_links" : outcome === "warn" ? "account_and_timing" : "none",
+    params: { return_windows_days: windows, escalation_within_minutes: P.escalation_within_minutes, normalise_reasons: normalise },
+    disclaimer: spec.disclaimer,
+  };
+  if (!botRows.length) return { ...base, available: false, basis: "none", reason: "No bot conversations export." };
+  if (!byIdKey) return { ...base, available: false, reason: "No case ID column, so linked cases can't be looked up." };
+
+  const bg = (r, k) => (bot.mapping[k] ? String(r[bot.mapping[k]] ?? "").trim() : "");
+  const byId = new Map();
+  for (const c of U) byId.set(c.case_id, c);
+
+  const buckets = { contradicted: 0, not_contradicted: 0, cant_tell: 0 };
+  // Priority order, so these sum to the contradicted total rather than double-count
+  // a conversation that was both reopened and escalated. Per-conversation `flags`
+  // keep the overlap visible.
+  const contradicted_by = { reopened: 0, escalated: 0, same_theme: 0 };
+  const cumulative = windows.map((d) => ({ days: d, contradicted: 0 }));
+  const by_conversation = [];
+  let claimed = 0, out_of_scope = 0, unreadable_theme_cases = 0, unresolved_links = 0;
+
+  for (const r of botRows) {
+    const id = bg(r, "bot_conversation_id");
+    if (!truthy(bg(r, "bot_claimed_resolved"))) { out_of_scope++; continue; }
+    claimed++;
+    if (outcome !== "pass") {
+      // Amber B11 means the links would have to be inferred from account and
+      // timing. That isn't implemented, and guessing would be worse than silence.
+      buckets.cant_tell++;
+      by_conversation.push({ id, bucket: "cant_tell", why: null, matched: [] });
+      continue;
+    }
+    const end = parseDate(bg(r, "bot_ended_at"));
+    const intent = bg(r, "bot_intent");
+    const themeReadable = real(intent);
+    const reopens = Number(bg(r, "bot_reopens"));
+    const flags = { reopened: Number.isFinite(reopens) && reopens > 0, escalated: false, same_theme: false };
+    const matched = [];
+    for (const cid of bg(r, "bot_linked_cases").split(/[;,|]/).map((s) => s.trim()).filter(Boolean)) {
+      const c = byId.get(cid);
+      if (!c) { unresolved_links++; continue; }
+      if (end == null || c._created == null) continue;
+      const lag = c._created - end;
+      if (lag <= 0 || lag > maxMs) continue;
+      if (lag <= escMs) {
+        // A human picking it up this soon is the bot handing over, not the
+        // customer coming back. Theme isn't asked: the handover is the evidence.
+        flags.escalated = true;
+        matched.push({ case_id: cid, lag_days: lag / DAY, as: "escalated", reason: c.reason });
+        continue;
+      }
+      if (!themeReadable) continue;
+      if (!real(c.reason)) { unreadable_theme_cases++; continue; }
+      if (sameTheme(c.reason, intent, normalise)) {
+        flags.same_theme = true;
+        matched.push({ case_id: cid, lag_days: lag / DAY, as: "same_theme", reason: c.reason });
+      }
+    }
+    const why = flags.reopened ? "reopened" : flags.escalated ? "escalated" : flags.same_theme ? "same_theme" : null;
+    // No contradiction and no readable theme means the return was never looked
+    // for, which is not the same as not finding one.
+    const bucket = why ? "contradicted" : themeReadable ? "not_contradicted" : "cant_tell";
+    buckets[bucket]++;
+    if (why) {
+      contradicted_by[why]++;
+      // Reopens and escalations happen at once, so they count in every window.
+      const soonest = flags.reopened || flags.escalated
+        ? 0 : Math.min(...matched.filter((m) => m.as === "same_theme").map((m) => m.lag_days));
+      for (const w of cumulative) if (soonest <= w.days) w.contradicted++;
+    }
+    by_conversation.push({ id, bucket, why, flags, matched });
+  }
+  return { ...base, conversations: botRows.length, claimed, out_of_scope, buckets,
+    contradicted_cumulative: cumulative, contradicted_by, unreadable_theme_cases, unresolved_links, by_conversation };
 }
 
 // ---------- signals ----------

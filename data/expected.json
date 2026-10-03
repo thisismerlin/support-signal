@@ -20,5 +20,19 @@
     "uses": { "resolution": "warn", "transfers": "warn", "csat": "warn", "churn": "pass", "ai": "warn", "resolution_audit": "not_in_export" },
     "signals": { "slow_passed": "caution", "handoff": "caution", "theme_movers": "on", "exit_events": "on", "keep_human": "caution" },
     "drivers_hold": ["slow", "slow_passed"]
+  },
+
+  "_bot": "The bot exports, each read alongside the case snapshot. Counts aren't repeated here: the tests read them from generation_stats.json, which the generator writes.",
+  "bot": {
+    "snapshot": { "B11": "warn", "use": "warn", "basis": "account_and_timing" },
+    "with_history": { "B11": "pass", "use": "pass", "basis": "case_links" }
+  },
+
+  "_resolution_audit": "Facts about the audit that the planted counts don't cover.",
+  "resolution_audit": {
+    "near_duplicate_follow_ups": 16,
+    "near_duplicate_follow_ups_matched_by_theme": 10,
+    "near_duplicate_follow_ups_matched_by_timing": 6,
+    "contradicted_without_normalising": 338
   }
 }
