@@ -34,55 +34,55 @@ team_words: ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue
 # the bot field bot_reopens in a bot export, and what stops a case export's
 # `conversation_id` being absorbed by bot_conversation_id.
 fields:
-  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber, conversation id, hs object id, issue key, ticket key] }
-  created_at:      { label: Created, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
-  closed_at:       { label: Closed, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate, resolution date, resolutiondate] }
-  status:          { label: Status, required: true, synonyms: [status, state, hs pipeline stage] }
-  owner:           { label: Owner, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid, assignee id, responder id, admin assignee id] }
-  group:           { label: Group or queue, synonyms: [group, queue, team, department, group id, team assignee id] }
-  reason:          { label: Contact reason, synonyms: [reason, category, case reason, contact reason, disposition, type, topic, hs ticket category] }
-  subject:         { label: Subject, synonyms: [subject, title, summary] }
-  description:     { label: Description, synonyms: [description, body, first message, details, description text, content] }
+  case_id:         { label: Case ID, shape: id, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber, conversation id, hs object id, issue key, ticket key] }
+  created_at:      { label: Created, shape: date, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
+  closed_at:       { label: Closed, shape: date, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate, resolution date, resolutiondate] }
+  status:          { label: Status, shape: category, required: true, synonyms: [status, state, hs pipeline stage] }
+  owner:           { label: Owner, shape: category, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid, assignee id, responder id, admin assignee id] }
+  group:           { label: Group or queue, shape: category, synonyms: [group, queue, team, department, group id, team assignee id] }
+  reason:          { label: Contact reason, shape: category, synonyms: [reason, category, case reason, contact reason, disposition, type, topic, hs ticket category] }
+  subject:         { label: Subject, shape: text, synonyms: [subject, title, summary] }
+  description:     { label: Description, shape: text, synonyms: [description, body, first message, details, description text, content] }
   # `file: both`: the bot export carries account, account size and product columns
   # with the same meaning as the case export's, so they are reused rather than
   # duplicated as bot_* fields. B11 reads account_id off the bot file to tell its
   # warn case (account plus timings) from not_in_export.
-  account_id:      { label: Account, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid, organization id, company id] }
-  account_size:    { label: Account size, file: both, synonyms: [account size, size, tier, plan, seats band, segment size] }
-  segment:         { label: Product or segment, file: both, synonyms: [product, segment, product line, region] }
-  channel:         { label: Channel, synonyms: [channel, origin, via, source] }
-  priority:        { label: Priority, synonyms: [priority, severity, hs ticket priority] }
-  reopen_count:    { label: Reopens, synonyms: [reopens, reopen count, times reopened] }
-  follow_up_of:    { label: Follow-up of, synonyms: [follow up of, follow-up of, parent case, related case] }
-  escalated:       { label: Escalated flag, synonyms: [escalated, is escalated, isescalated, fr escalated] }
-  owner_changes:   { label: Owners count, synonyms: [owner changes, assignee stations, assignees, owner count] }
-  group_changes:   { label: Groups count, synonyms: [group changes, group stations, groups, queue changes] }
-  wait_time:       { label: Customer wait time, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes] }
-  resolution_note: { label: Resolution note, synonyms: [resolution, resolution note, solution, resolution notes, close notes] }
-  linked_article:  { label: Linked article, synonyms: [article, linked article, kb article, macro, knowledge article] }
-  last_update_at:  { label: Last update, synonyms: [last update, last updated, last public update, updated at, last modified, updated] }
-  csat_score:      { label: CSAT score, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating] }
-  churned:         { label: Churned, synonyms: [churned, churn, cancelled, lost] }
-  exit_event:      { label: Exit event, synonyms: [exit event, cancellation, deregistration] }
+  account_id:      { label: Account, shape: id, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid, organization id, company id] }
+  account_size:    { label: Account size, shape: category, file: both, synonyms: [account size, size, tier, plan, seats band, segment size] }
+  segment:         { label: Product or segment, shape: category, file: both, synonyms: [product, segment, product line, region] }
+  channel:         { label: Channel, shape: category, synonyms: [channel, origin, via, source] }
+  priority:        { label: Priority, shape: category, synonyms: [priority, severity, hs ticket priority] }
+  reopen_count:    { label: Reopens, shape: number, synonyms: [reopens, reopen count, times reopened] }
+  follow_up_of:    { label: Follow-up of, shape: id, synonyms: [follow up of, follow-up of, parent case, related case] }
+  escalated:       { label: Escalated flag, shape: flag, synonyms: [escalated, is escalated, isescalated, fr escalated] }
+  owner_changes:   { label: Owners count, shape: number, synonyms: [owner changes, assignee stations, assignees, owner count] }
+  group_changes:   { label: Groups count, shape: number, synonyms: [group changes, group stations, groups, queue changes] }
+  wait_time:       { label: Customer wait time, shape: number, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes] }
+  resolution_note: { label: Resolution note, shape: text, synonyms: [resolution, resolution note, solution, resolution notes, close notes] }
+  linked_article:  { label: Linked article, shape: id, synonyms: [article, linked article, kb article, macro, knowledge article] }
+  last_update_at:  { label: Last update, shape: date, synonyms: [last update, last updated, last public update, updated at, last modified, updated] }
+  csat_score:      { label: CSAT score, shape: number, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating] }
+  churned:         { label: Churned, shape: flag, synonyms: [churned, churn, cancelled, lost] }
+  exit_event:      { label: Exit event, shape: category, synonyms: [exit event, cancellation, deregistration] }
 
   # Bot conversation fields, for the resolution audit. Matched only against a bot
   # export, so these synonyms are free to repeat ones used by the case fields
   # above. Field order carries no meaning: the two sets no longer share a
   # namespace, so there is no first-match race to win.
-  bot_conversation_id:  { label: Bot conversation ID, file: bot, synonyms: [bot conversation id, conversation id, bot chat id, chat id, session id] }
-  bot_started_at:       { label: Bot conversation started, file: bot, synonyms: [started at, bot started at, conversation started at] }
-  bot_ended_at:         { label: Bot conversation ended, file: bot, synonyms: [ended at, bot ended at, conversation ended at] }
-  bot_intent:           { label: Bot intent, file: bot, synonyms: [intent, bot intent, detected intent, detected theme] }
-  bot_claimed_resolved: { label: Bot claimed resolved, file: bot, synonyms: [claimed resolved, bot claimed resolved, claimed resolution] }
-  bot_customer_message: { label: Customer message, file: bot, synonyms: [customer message, first message, customer wording, utterance] }
+  bot_conversation_id:  { label: Bot conversation ID, shape: id, file: bot, synonyms: [bot conversation id, conversation id, bot chat id, chat id, session id] }
+  bot_started_at:       { label: Bot conversation started, shape: date, file: bot, synonyms: [started at, bot started at, conversation started at] }
+  bot_ended_at:         { label: Bot conversation ended, shape: date, file: bot, synonyms: [ended at, bot ended at, conversation ended at] }
+  bot_intent:           { label: Bot intent, shape: category, file: bot, synonyms: [intent, bot intent, detected intent, detected theme] }
+  bot_claimed_resolved: { label: Bot claimed resolved, shape: flag, file: bot, synonyms: [claimed resolved, bot claimed resolved, claimed resolution] }
+  bot_customer_message: { label: Customer message, shape: text, file: bot, synonyms: [customer message, first message, customer wording, utterance] }
   # Shares every synonym with the case field reopen_count, which is the point: in
   # a case export `reopens` is reopen_count and check B6 reads it, in a bot export
   # the same header is this field and the audit's reopened bucket reads it.
-  bot_reopens:          { label: Bot conversation reopens, file: bot, synonyms: [reopens, reopen count, times reopened] }
+  bot_reopens:          { label: Bot conversation reopens, shape: number, file: bot, synonyms: [reopens, reopen count, times reopened] }
   # Deliberately excludes "follow up of", "parent case" and "related case": those
   # belong to the case field follow_up_of, which check B6 reads. A bot link column
   # must never win that header, in either direction.
-  bot_linked_cases:     { label: Linked cases, file: bot, synonyms: [linked case ids, linked cases, linked case id, bot linked cases] }
+  bot_linked_cases:     { label: Linked cases, shape: id, file: bot, synonyms: [linked case ids, linked cases, linked case id, bot linked cases] }
 
 checks:
   - id: C1

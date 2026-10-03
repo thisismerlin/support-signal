@@ -28,6 +28,11 @@ for scope in ("case", "bot"):
             if seen.get(s, k) != k:
                 errs.append(f"synonym {s!r} claimed by both {seen[s]} and {k} in {scope} files")
             seen[s] = k
+# Value inference switches on these; a typo would silently stop a field being guessable.
+SHAPES = {"id", "date", "category", "text", "number", "flag"}
+errs += [f"field {k} shape: {f['shape']}" for k, f in r["fields"].items()
+         if "shape" in f and f["shape"] not in SHAPES]
+errs += [f"field {k} has no shape" for k, f in r["fields"].items() if "shape" not in f]
 # Every vendor we claim to have sourced column names from must point at a real ref.
 errs += [f"column_name_sources {v} -> {k}" for v, k in r.get("column_name_sources", {}).items()
          if k not in r["refs"]]

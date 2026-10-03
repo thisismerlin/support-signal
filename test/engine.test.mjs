@@ -183,6 +183,57 @@ test("header normalisation produces the forms we match on", () => {
   has("ticket.status", "status");
 });
 
+// ----------------------------------------------------- inference from column values
+// Opaque headers, recognisable contents. Only a column whose values fit exactly one
+// field's shape is guessed, and a guess is always labelled as one.
+const opaque = (n = 60) => Array.from({ length: n }, (_, i) => ({
+  a: `REF-${10000 + i}`,
+  b: `2026-0${(i % 9) + 1}-12 09:${String(i % 60).padStart(2, "0")}`,
+  c: ["Billing", "Login issue", "Rota sync", "Payroll"][i % 4],
+  d: `Customer ${i} reports the rota export failing every morning for their whole team`,
+}));
+
+test("values give away a column when its name doesn't", () => {
+  const { map, confidence } = mapColumns({ headers: ["a", "b", "c", "d"], rules, records: opaque() });
+  assert.equal(map.case_id, "a", "near-unique short tokens are an id");
+  assert.equal(map.created_at, "b", "parseable dates are a date");
+  assert.equal(map.subject, "d", "long varied prose is free text");
+  for (const k of ["case_id", "created_at", "subject"]) assert.equal(confidence[k], "guess", k);
+});
+
+// parseDate ends in Date.parse, which reads "CASE-42" as the year 2042. Inference must
+// not take that as evidence a column holds dates.
+test("id-shaped values are not mistaken for dates", () => {
+  const recs = Array.from({ length: 40 }, (_, i) => ({ a: `CASE-${i}`, b: `ACC-${1000 + i}` }));
+  const { map } = mapColumns({ headers: ["a", "b"], rules, records: recs });
+  assert.ok(!Object.keys(map).some((k) => rules.fields[k].shape === "date"), JSON.stringify(map));
+});
+
+// Two columns of the same shape carry no signal about which is which.
+test("an ambiguous shape is left unmapped rather than guessed", () => {
+  const recs = Array.from({ length: 40 }, (_, i) => ({
+    a: `2026-01-${String((i % 27) + 1).padStart(2, "0")}`,
+    b: `2026-05-${String((i % 27) + 1).padStart(2, "0")}`,
+  }));
+  assert.deepEqual(mapColumns({ headers: ["a", "b"], rules, records: recs }).map, {});
+});
+
+test("a guess never takes a column a name already claimed", () => {
+  const headers = ["case_id", "a", "b", "c", "d"];
+  const recs = opaque().map((r, i) => ({ ...r, case_id: `LS-${i}` }));
+  const { map, confidence } = mapColumns({ headers, rules, records: recs });
+  assert.equal(map.case_id, "case_id");
+  assert.equal(confidence.case_id, "name");
+  const used = Object.values(map);
+  assert.equal(new Set(used).size, used.length);
+});
+
+test("autoMap never guesses, because it is given no values", () => {
+  const { map } = mapColumns({ headers: ["a", "b", "c", "d"], rules });
+  assert.deepEqual(map, {});
+  assert.deepEqual(autoMap(["a", "b", "c", "d"], rules), {});
+});
+
 // ------------------------------------------------------- the demo mapping is pinned
 // A better column matcher must not quietly remap the demo exports. If it does, every
 // expected verdict in expected.json is measuring something other than it used to.

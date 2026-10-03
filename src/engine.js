@@ -136,9 +136,70 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
   return { map, confidence, scores };
 }
 
-// Inference from column values. Filled in by the next commit; until then nothing is
-// guessed, which is the safe direction: a missing mapping is visible, a wrong one isn't.
-function inferFromValues() { return {}; }
+// When no name matches, the values sometimes give a field away: a column of parseable
+// dates, of near-unique short tokens, of a dozen repeating labels, of long prose. A
+// guess is only ever offered for a field whose `shape` it fits, it is always marked a
+// guess, and an ambiguous column is left alone — a visible gap beats a quiet mistake.
+const SAMPLE = 300;
+
+// parseDate() ends in Date.parse(), which is lenient enough to read "CASE-42" as the
+// year 2042 and "ACC-0637" as 637. That is fine when a column is already known to hold
+// dates; it is useless for deciding whether it does. Inference asks for a date shape
+// first, and only then whether it parses.
+const DATE_SHAPES = [
+  /^\d{4}-\d{2}-\d{2}([ T]|$)/,              // 2026-03-12, ISO
+  /^\d{1,2}[\/.]\d{1,2}[\/.]\d{4}($|[ ,])/,   // 12/03/2026, 12.03.2026
+  /^\d{1,2} [A-Za-z]{3,} \d{4}($|[ ,])/,      // 12 March 2026
+  /^[A-Za-z]{3,} \d{1,2},? \d{4}($|[ ,])/,    // March 12, 2026
+];
+const isDateLike = (v) => DATE_SHAPES.some((re) => re.test(v)) && parseDate(v) != null;
+
+function profileColumn(records, header) {
+  const vals = [];
+  for (const r of records) {
+    if (vals.length >= SAMPLE) break;
+    const v = String(r[header] ?? "").trim();
+    if (v) vals.push(v);
+  }
+  if (vals.length < 5) return null;                       // too thin to judge
+  const distinct = new Set(vals).size;
+  const dates = vals.filter(isDateLike).length / vals.length;
+  const numeric = vals.filter((v) => v !== "" && Number.isFinite(Number(v))).length / vals.length;
+  const avgLen = vals.reduce((a, v) => a + v.length, 0) / vals.length;
+  const avgWords = vals.reduce((a, v) => a + v.split(/\s+/).length, 0) / vals.length;
+  return { n: vals.length, distinct, unique: distinct / vals.length, dates, numeric, avgLen, avgWords,
+    boolish: vals.every((v) => /^(y|n|yes|no|true|false|0|1|t|f)$/i.test(v)) };
+}
+
+function fitsShape(shape, p) {
+  switch (shape) {
+    case "date":     return p.dates >= 0.8;
+    case "id":       return p.unique >= 0.95 && p.avgWords < 2 && p.avgLen <= 40 && p.dates < 0.5;
+    case "flag":     return p.boolish;
+    case "number":   return p.numeric >= 0.9 && p.dates < 0.5;
+    case "category": return p.distinct <= 25 && p.unique <= 0.25 && p.avgWords <= 4 && p.dates < 0.5 && !p.boolish;
+    case "text":     return p.avgWords >= 5 && p.unique > 0.25;
+    default:         return false;
+  }
+}
+
+function inferFromValues({ fields, headers, records, map, usedHeader }) {
+  const open = headers.filter((h) => !usedHeader.has(h));
+  if (!open.length) return {};
+  const profiles = new Map();
+  for (const h of open) { const p = profileColumn(records, h); if (p) profiles.set(h, p); }
+
+  const guessed = {};
+  const taken = new Set();
+  for (const [key, f] of fields) {
+    if (map[key] || !f.shape) continue;
+    const fits = [...profiles].filter(([h, p]) => !taken.has(h) && fitsShape(f.shape, p)).map(([h]) => h);
+    // Exactly one candidate or none. Two columns that both look like dates give us no
+    // way to tell created from closed, and picking one would be a coin toss.
+    if (fits.length === 1) { guessed[key] = fits[0]; taken.add(fits[0]); }
+  }
+  return guessed;
+}
 
 // Backwards compatible: the plain {field: header} map the engine and the page use.
 export function autoMap(headers, rules, scope = "case") {
