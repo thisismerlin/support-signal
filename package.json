@@ -1,0 +1,13 @@
+{
+  "name": "support-signal",
+  "version": "0.2.0",
+  "description": "Checks whether support case data can answer the questions you're about to spend money on.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "data": "python3 generator/generate_demo.py",
+    "rules": "python3 scripts/build_rules.py",
+    "test": "npm run rules && node --test test/engine.test.mjs",
+    "build": "npm run rules && python3 scripts/build_page.py"
+  }
+}

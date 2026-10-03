@@ -1,0 +1,357 @@
+# Support Signal rules
+# The single source of truth. The engine runs these; the published rules
+# pages and the tests are generated from the same file.
+#
+# STATUS: draft. Every threshold marked provisional is a starting point to
+# calibrate against real exports, not evidence. Don't quote them publicly.
+#
+# Threshold shape: { dir: higher|lower, pass: number, warn: number }
+#   higher: pass if value >= pass, warn if >= warn, else fail
+#   lower:  pass if value <= pass, warn if <= warn, else fail
+
+meta:
+  version: 0.2.0
+  status: draft
+  updated: 2026-10-01
+  outcomes:
+    pass: { label: Green, text: The data supports this. }
+    warn: { label: Amber, text: Usable with care. The reason says what to watch. }
+    fail: { label: Red, text: Don't build on this yet. }
+    not_in_export: { label: Not in export, text: The export doesn't contain this. Not a judgement on your system. }
+    needs_human: { label: Needs a human, text: Can't be judged automatically. The report says what to look at. }
+
+placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"]
+junk_text: ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"]
+team_words: ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue", "transfer", "transferred", "backlog"]
+
+fields:
+  case_id:         { label: Case ID, required: true, synonyms: [case id, ticket id, id, case number, ticket number, casenumber] }
+  created_at:      { label: Created, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
+  closed_at:       { label: Closed, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate] }
+  status:          { label: Status, required: true, synonyms: [status, state] }
+  owner:           { label: Owner, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid] }
+  group:           { label: Group or queue, synonyms: [group, queue, team, department] }
+  reason:          { label: Contact reason, synonyms: [reason, category, case reason, contact reason, disposition, type, topic] }
+  subject:         { label: Subject, synonyms: [subject, title, summary] }
+  description:     { label: Description, synonyms: [description, body, first message, details] }
+  account_id:      { label: Account, synonyms: [account, account id, organization, organisation, company, customer id, accountid] }
+  account_size:    { label: Account size, synonyms: [account size, size, tier, plan, seats band, segment size] }
+  segment:         { label: Product or segment, synonyms: [product, segment, product line, region] }
+  channel:         { label: Channel, synonyms: [channel, origin, via, source] }
+  priority:        { label: Priority, synonyms: [priority, severity] }
+  reopen_count:    { label: Reopens, synonyms: [reopens, reopen count, times reopened] }
+  follow_up_of:    { label: Follow-up of, synonyms: [follow up of, follow-up of, parent case, related case] }
+  escalated:       { label: Escalated flag, synonyms: [escalated, is escalated, isescalated] }
+  owner_changes:   { label: Owners count, synonyms: [owner changes, assignee stations, assignees, owner count] }
+  group_changes:   { label: Groups count, synonyms: [group changes, group stations, groups, queue changes] }
+  wait_time:       { label: Customer wait time, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes] }
+  resolution_note: { label: Resolution note, synonyms: [resolution, resolution note, solution, resolution notes, close notes] }
+  linked_article:  { label: Linked article, synonyms: [article, linked article, kb article, macro, knowledge article] }
+  last_update_at:  { label: Last update, synonyms: [last update, last updated, last public update, updated at, last modified] }
+  csat_score:      { label: CSAT score, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating] }
+  churned:         { label: Churned, synonyms: [churned, churn, cancelled, lost] }
+  exit_event:      { label: Exit event, synonyms: [exit event, cancellation, deregistration] }
+
+checks:
+  - id: C1
+    band: C
+    dimension: completeness
+    title: Core columns are present
+    failure_title: Core columns are missing
+    metric: Share of the four core fields (case ID, created, closed, status) found in the export
+    threshold: { dir: higher, pass: 1.0, warn: 0.75 }
+    why: Case ID, opened, closed and status underpin every other check and signal.
+    fix: Add the missing columns to the export. All major helpdesks have them as standard fields.
+    refs: [dama-nl]
+
+  - id: C2
+    band: C
+    dimension: completeness
+    title: Case history is available
+    failure_title: Only a final-state snapshot
+    metric: History file present (green), count columns only (amber), neither (not in export)
+    why: Without history you can't see transfers, reopens or how long cases sat with each team. Standard CSV exports usually leave it out.
+    fix: In Zendesk, add ticket metrics fields or pull ticket audits through the API. In Salesforce, turn on field history for Owner and Status and export Case History.
+    refs: [zendesk-exports, freshdesk-export, zendesk-ticket-metrics]
+
+  - id: C3
+    band: C
+    dimension: timeliness
+    title: History covers the period analysed
+    failure_title: History is shorter than the period analysed
+    metric: Share of cases created after history tracking began
+    threshold: { dir: higher, pass: 0.95, warn: 0.6, provisional: true }
+    why: Salesforce keeps field history for up to 18 months, and only from when tracking was switched on. Older cases look as if they never moved.
+    fix: Limit analysis to the period history covers, or extend retention.
+    refs: [salesforce-field-history]
+
+  - id: C4
+    band: C
+    dimension: uniqueness
+    title: Each case appears once
+    failure_title: Duplicate cases found
+    metric: Share of rows whose case ID appears more than once
+    threshold: { dir: lower, pass: 0.0, warn: 0.01, provisional: true }
+    why: Duplicates inflate volume and distort every rate.
+    fix: Deduplicate on case ID and check whether the export joined a one-to-many table.
+    refs: [dama-nl]
+
+  - id: B1
+    band: B
+    dimension: completeness
+    title: Routing fields are genuinely filled
+    failure_title: Routing fields are mostly empty or placeholders
+    metric: Lowest real fill rate across owner, group and reason (placeholders like "N/A" and "Other" count as empty)
+    threshold: { dir: higher, pass: 0.9, warn: 0.6, provisional: true }
+    why: A field that is mostly "N/A" or "Other" is empty in practice, however full it looks.
+    fix: Make the field required at closure and remove placeholder defaults.
+    refs: [dama-nl]
+
+  - id: B2
+    band: B
+    dimension: validity
+    title: Reasons aren't dominated by a catch-all
+    failure_title: A catch-all reason swallows too many cases
+    metric: Share of cases whose reason is blank or a catch-all such as "Other" or "General"
+    threshold: { dir: lower, pass: 0.1, warn: 0.2, provisional: true }
+    why: Whatever sits in "Other" is invisible to reporting and to any AI trained on your reasons.
+    fix: Sample the catch-all, split its biggest themes into new reasons, and remove "Other" as a default.
+    refs: [spotsaas-disposition, mosaic-categorisation]
+    note: Practitioner rules of thumb only. No research-grade threshold exists.
+
+  - id: B3
+    band: B
+    dimension: consistency
+    title: Reason codes are a tidy set
+    failure_title: Reason codes have sprawled
+    metric: Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times
+    why: Duplicates like "SSO" and "Single sign-on" split one issue in two and make trends meaningless.
+    fix: Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.
+    refs: [supportbench-taxonomy, xebia-contact-reasons]
+
+  - id: B4
+    band: B
+    dimension: consistency
+    title: Dates make sense
+    failure_title: Impossible dates found
+    metric: Share of cases closed before they were created, or with a status that contradicts the close date
+    threshold: { dir: lower, pass: 0.005, warn: 0.02, provisional: true }
+    why: One bad date can wreck an average resolution time.
+    fix: Find the automation or import writing bad dates, and exclude affected cases until fixed.
+    refs: [dama-nl]
+
+  - id: B5
+    band: B
+    dimension: validity
+    title: Resolution time separates customer wait
+    failure_title: Can't separate customer wait from agent work
+    metric: A customer-wait or on-hold time field is present and filled
+    why: Zendesk's full resolution time includes pending time and runs to the last solve. Without a wait field, "slow" may just mean "waiting on the customer".
+    fix: Add requester-wait or on-hold time to the export.
+    refs: [zendesk-durations]
+
+  - id: B6
+    band: B
+    dimension: validity
+    title: Reopens can be counted
+    failure_title: Reopens are invisible
+    metric: Reopen count present (amber); plus follow-up cases linked to originals (green)
+    why: In Zendesk, a reply to a closed ticket creates a new follow-up ticket instead of a reopen, so reopen counts miss repeat contacts.
+    fix: Include the reopens metric and link follow-up tickets to their originals.
+    refs: [zendesk-follow-up]
+
+  - id: B7
+    band: B
+    dimension: validity
+    title: The escalation flag is actually used
+    failure_title: The escalation flag is rarely set
+    metric: Share of cases flagged, compared with the share that history shows moving to engineering or tier 3
+    why: A flag that's almost never set usually means nobody sets it, not that nothing happens.
+    fix: Set the flag automatically from the routing event, or stop reporting on it.
+    refs: []
+
+  - id: B8
+    band: B
+    dimension: completeness
+    title: Survey scores are linked to cases
+    failure_title: Few closed cases carry a survey score
+    metric: Share of closed cases with a CSAT score
+    threshold: { dir: higher, pass: 0.15, warn: 0.05, provisional: true }
+    why: Survey analysis needs enough linked responses, and the happiest customers answer most, so low coverage hides real gaps.
+    fix: Link survey responses to case IDs; compare who responds with who doesn't before modelling.
+    refs: [mazor-response-bias]
+
+  - id: B9
+    band: B
+    dimension: completeness
+    title: Cases link to accounts
+    failure_title: Many cases have no account
+    metric: Share of cases with a real account ID
+    threshold: { dir: higher, pass: 0.95, warn: 0.8, provisional: true }
+    why: Churn analysis happens at account level. Unlinked cases drop out silently.
+    fix: Require an account on every case, or match on contact email domain.
+    refs: [dama-nl]
+
+  - id: B10
+    band: B
+    dimension: completeness
+    title: You can control for account size or product
+    failure_title: Nothing to control for
+    metric: Account size or product/segment present and filled on 90% of cases
+    threshold: { dir: higher, pass: 0.9, warn: 0.6, provisional: true }
+    why: Bigger, busier accounts raise more cases and behave differently. Without a size or segment field, every apparent driver is confounded.
+    fix: Join account size band and product to the export.
+    refs: [catalog-confounding]
+
+  - id: AI1
+    band: B
+    dimension: completeness
+    title: Customers' words are captured
+    failure_title: Little usable customer text
+    metric: Share of cases whose subject or description has five or more words and isn't a stock phrase
+    threshold: { dir: higher, pass: 0.8, warn: 0.5, provisional: true }
+    why: Without the customer's own words you can't discover what they want, the first job of any AI self-help project.
+    fix: Include the first customer message. Zendesk CSV exports leave out descriptions, so use JSON or the API.
+    refs: [zendesk-exports]
+
+  - id: AI2
+    band: B
+    dimension: validity
+    title: Reasons describe customer needs
+    failure_title: Reasons describe teams, not customers
+    metric: Share of volume whose reason names a team, tier or process ("Tier 2", "Escalated")
+    threshold: { dir: lower, pass: 0.1, warn: 0.3, provisional: true }
+    why: A reason like "Tier 2" tells a bot nothing about what the customer wanted. AI intents must describe the customer's need.
+    fix: Keep routing in routing fields and rewrite reasons as customer needs.
+    refs: [zendesk-custom-intents]
+
+  - id: AI3
+    band: B
+    dimension: consistency
+    title: Reasons don't overlap
+    failure_title: Reasons overlap
+    metric: Reviewed by a person in this version; the report lists near-duplicate reasons to start from
+    why: Zendesk warns that overlapping intents cause "low-confidence or wrong topic detection".
+    fix: Merge or redefine overlapping reasons so each covers one need.
+    refs: [zendesk-custom-intents, xebia-contact-reasons]
+
+  - id: AI4
+    band: B
+    dimension: completeness
+    title: Solutions are recorded
+    failure_title: Few cases record how they were solved
+    metric: Share of closed cases with a resolution note or linked article
+    threshold: { dir: higher, pass: 0.7, warn: 0.3, provisional: true }
+    why: AI agents answer from written knowledge. If solutions live only in agents' heads, there's nothing to ground an answer in.
+    fix: Require a resolution note or linked article at closure, and mine macros for missing articles.
+    refs: [intercom-knowledge-sources, intercom-content, agentforce-knowledge]
+
+  - id: AI5
+    band: A
+    dimension: fit for use
+    title: Demand is concentrated enough to automate
+    failure_title: Demand is too scattered to automate easily
+    metric: Share of cases with a real reason that fall in the ten most common reasons
+    threshold: { dir: higher, pass: 0.5, warn: 0.3, provisional: true }
+    why: Automation pays back fastest on frequent, repeated questions.
+    fix: Start with the top themes and leave the long tail to people.
+    refs: []
+
+  - id: AI6
+    band: A
+    dimension: fit for use
+    title: Volume meets published vendor minimums
+    failure_title: Volume is below some vendors' published minimums
+    metric: Total cases against Forethought's published 20,000+ historical tickets and 2,000+ email or chat tickets a month
+    why: Some vendors need a minimum history to train. Most don't publish one, so ask.
+    fix: Ask each vendor for its minimum before a pilot.
+    refs: [forethought-faq]
+
+uses:
+  - id: resolution
+    title: Resolution time analysis
+    required: [C1, C4, B4]
+    optional: [B5, B6]
+  - id: transfers
+    title: Transfers and ownership
+    required: [C1, C2]
+    optional: [C3, B7]
+  - id: csat
+    title: CSAT and survey analysis
+    required: [C1, B8]
+    optional: [B2]
+  - id: churn
+    title: Linking cases to churn
+    required: [C1, B9, B10]
+    optional: [C2]
+  - id: ai
+    title: AI self-help readiness
+    required: [AI1, AI2, AI4]
+    optional: [AI3, AI5, AI6, B2, B3]
+
+signals:
+  - id: slow_passed
+    title: Slow and passed-around cases
+    unlocked_by_uses: [transfers, resolution]
+    params: { slow_days: 30, min_owners: 3, provisional: true }
+    shows: Cases open more than 30 days with three or more owners, by group
+    disclaimer: The one service signal worth watching. Not proof that it causes churn.
+  - id: handoff
+    title: Handed off versus held
+    unlocked_by_uses: [transfers]
+    shows: Resolution time and CSAT for cases kept by one owner versus handed on
+    disclaimer: Harder cases get handed on, so this isn't a fair comparison of teams.
+  - id: theme_movers
+    title: Theme movers
+    unlocked_by_any_check: [AI1, B2]
+    shows: Reasons rising or falling in the last quarter against the previous nine months
+    disclaimer: Shows what is moving, not why.
+  - id: open_risk
+    title: Open work at risk
+    unlocked_by_uses: [resolution]
+    requires_fields: [last_update_at]
+    shows: Open cases older than 70% of closed cases took to resolve
+    disclaimer: Not a prediction of which customers will leave.
+  - id: exit_events
+    title: Exit events
+    requires_fields: [exit_event]
+    shows: Cancellations and similar events logged in cases, for whoever owns retention
+    disclaimer: A commercial warning recorded in support, not something support caused.
+  - id: self_help
+    title: AI self-help candidates
+    unlocked_by_uses: [ai]
+    shows: Reasons that are frequent, quick, single-owner and documented
+    disclaimer: A shortlist to test, not a deflection forecast.
+  - id: keep_human
+    title: Keep-a-human themes
+    unlocked_by_uses: [ai, transfers]
+    shows: Reasons with long resolution times or many owners
+    disclaimer: Where automation is most likely to frustrate customers.
+
+vendor_questions:
+  - How do you define a resolution, and how do you count reopens?
+  - Do you report containment separately from resolution?
+  - What minimum ticket history and monthly volume do you need?
+  - Do you learn from our past tickets, our knowledge articles, or both?
+  - What happens when our reasons or tags overlap?
+  - Who grades the resolutions, you or us?
+
+refs:
+  dama-nl: { title: "DAMA NL, Dimensions of Data Quality", url: "https://dama-nl.org/wp-content/uploads/2020/09/DDQ-Dimensions-of-Data-Quality-Research-Paper-version-1.2-d.d.-3-Sept-2020.pdf" }
+  zendesk-exports: { title: "Zendesk, exporting ticket data", url: "https://support.zendesk.com/hc/en-us/articles/4408886165402" }
+  zendesk-ticket-metrics: { title: "Zendesk, ticket metrics API", url: "https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_metrics/" }
+  zendesk-durations: { title: "Zendesk, time duration metrics", url: "https://support.zendesk.com/hc/en-us/articles/4408834848154-About-native-Support-time-duration-metrics" }
+  zendesk-follow-up: { title: "Zendesk, follow-up tickets", url: "https://support.zendesk.com/hc/en-us/articles/8421655952026-Understanding-follow-up-tickets" }
+  zendesk-custom-intents: { title: "Zendesk, custom intents", url: "https://support.zendesk.com/hc/en-us/articles/8718789695002-Personalizing-intelligent-triage-by-creating-custom-intents" }
+  freshdesk-export: { title: "Freshdesk, ticket export", url: "https://support.freshdesk.com/support/solutions/articles/225158" }
+  salesforce-field-history: { title: "Salesforce, field history tracking", url: "https://developer.salesforce.com/docs/atlas.en-us.securityImplGuide.meta/securityImplGuide/tracking_field_history.htm" }
+  spotsaas-disposition: { title: "Spotsaas, disposition taxonomy", url: "https://www.spotsaas.com/resources/call-center-software/disposition-taxonomy" }
+  mosaic-categorisation: { title: "Mosaic, ticket categorisation", url: "https://getmosaic.ai/blog/support-ticket-categorization-best-practices" }
+  supportbench-taxonomy: { title: "Supportbench, support taxonomy", url: "https://www.supportbench.com/building-support-taxonomy-tag-tickets-product-insights/" }
+  xebia-contact-reasons: { title: "Xebia, categorising contact reasons", url: "https://xebia.com/blog/four-practical-tips-on-how-to-categorize-contact-reasons/" }
+  intercom-knowledge-sources: { title: "Intercom, knowledge sources for AI agents", url: "https://www.intercom.com/help/en/articles/9440354-knowledge-sources-to-power-ai-agents-and-self-serve-support" }
+  intercom-content: { title: "Intercom, optimising content for Fin", url: "https://www.intercom.com/help/en/articles/7860255-optimizing-content-for-fin" }
+  agentforce-knowledge: { title: "Salesforce, Agentforce and Knowledge", url: "https://help.salesforce.com/s/articleView?id=004333412&language=en_US&type=1" }
+  forethought-faq: { title: "Forethought FAQ", url: "https://forethought.ai/faq" }
+  mazor-response-bias: { title: "Mazor et al., survey response bias", url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC1464019/" }
+  catalog-confounding: { title: "Catalog of Bias, confounding", url: "https://catalogofbias.org/biases/confounding/" }

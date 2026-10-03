@@ -1,0 +1,15 @@
+import { readFileSync } from "node:fs";
+import { parseCSV, autoMap, runAudit } from "../src/engine.js";
+const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
+const which = process.argv[2] || "snapshot";
+const file = which === "snapshot" ? "larkspur_snapshot.csv" : "larkspur_with_history.csv";
+const { headers, records } = parseCSV(readFileSync(new URL(`../data/${file}`, import.meta.url), "utf8"));
+const mapping = autoMap(headers, rules);
+const history = which === "snapshot" ? null : parseCSV(readFileSync(new URL("../data/larkspur_history_log.csv", import.meta.url), "utf8")).records;
+const rep = runAudit({ records, mapping, history, rules, source: which });
+console.log("unmapped:", headers.filter(h => !Object.values(mapping).includes(h)));
+for (const c of Object.values(rep.checks)) console.log(c.id.padEnd(4), c.outcome.padEnd(14), String(c.display).padEnd(14), c.detail);
+for (const u of rep.uses) console.log("USE", u.id.padEnd(10), u.outcome.padEnd(14), u.blockers.join(","));
+for (const s of rep.signals) console.log("SIG", s.id.padEnd(13), s.state.padEnd(8), s.headline || s.reason || "");
+console.log("fix first", rep.fixFirst);
+if (rep.drivers.available) for (const r of rep.drivers.results) console.log("DRV", r.label.padEnd(56), r.raw.or.toFixed(2), `[${r.raw.lo.toFixed(2)},${r.raw.hi.toFixed(2)}]`, "->", r.adj?.or.toFixed(2), `[${r.adj?.lo.toFixed(2)},${r.adj?.hi.toFixed(2)}]`, r.holds ? "HOLDS" : "");

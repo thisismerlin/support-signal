@@ -1,0 +1,247 @@
+<title>Support Signal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single report column, summary first (uses, fix first), then signals, the driver test, and the full check list. */
+:root {
+  --paper: #f5f6f9; --surface: #ffffff; --ink: #172033; --muted: #5a6376; --rule: #dde1ea;
+  --accent: #3346a8; --accent-ink: #ffffff;
+  --good: #1d7a4c; --warn: #a35f00; --bad: #b3302b; --na: #69707f;
+  --f-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #0f131b; --surface: #161b26; --ink: #e6e9f0; --muted: #9aa3b6; --rule: #2a3141;
+  --accent: #8e9ff4; --accent-ink: #0f131b; --good: #4cc38a; --warn: #f0a93a; --bad: #f2756f; --na: #9aa0ab; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --paper: #0f131b; --surface: #161b26; --ink: #e6e9f0; --muted: #9aa3b6; --rule: #2a3141;
+  --accent: #8e9ff4; --accent-ink: #0f131b; --good: #4cc38a; --warn: #f0a93a; --bad: #f2756f; --na: #9aa0ab; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.55 var(--f-body); margin: 0; }
+.wrap { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; display: grid; gap: 44px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 1.55rem; font-weight: 700; }
+h3 { font-size: 1.05rem; font-weight: 600; font-family: var(--f-body); letter-spacing: 0; }
+p { margin: 0; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible, summary:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--f-mono); font-size: 0.85em; }
+.eyebrow { font: 500 0.75rem/1 var(--f-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.section-head { display: grid; gap: 6px; margin-bottom: 18px; max-width: 68ch; }
+.section-head p { color: var(--muted); }
+
+/* header */
+header.top { display: grid; gap: 18px; }
+.brand { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.brand h1 { font-size: clamp(2.2rem, 6vw, 3.4rem); font-weight: 700; line-height: 1; }
+.brand .ver { font: 500 0.75rem var(--f-mono); color: var(--muted); border: 1px solid var(--rule); border-radius: 99px; padding: 3px 9px; }
+.lede { font-size: 1.2rem; max-width: 60ch; }
+.lede strong { font-family: var(--f-display); font-weight: 700; }
+.sub { color: var(--muted); max-width: 66ch; }
+.source { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; padding: 4px; gap: 4px; }
+.seg button { font: 500 0.92rem var(--f-body); color: var(--ink); background: transparent; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.seg button:hover:not([aria-pressed="true"]) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.privacy { font-size: 0.85rem; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+.privacy::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); flex: none; }
+
+/* chips */
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 0.72rem/1 var(--f-mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 5px 8px; border-radius: 6px; white-space: nowrap; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip-pass { color: var(--good); background: color-mix(in srgb, var(--good) 13%, transparent); }
+.chip-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.chip-fail { color: var(--bad); background: color-mix(in srgb, var(--bad) 13%, transparent); }
+.chip-not_in_export, .chip-needs_human { color: var(--na); background: color-mix(in srgb, var(--na) 14%, transparent); }
+.chip-needs_human::before { border-radius: 2px; }
+.chip-not_in_export::before { background: transparent; border: 1.5px solid currentColor; }
+
+/* summary */
+.run-meta { font: 500 0.85rem var(--f-mono); color: var(--muted); }
+.uses { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.use { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r); padding: 16px; display: grid; gap: 8px; align-content: start; border-top: 3px solid var(--na); min-width: 0; }
+.use-pass { border-top-color: var(--good); } .use-warn { border-top-color: var(--warn); } .use-fail, .use-not_in_export { border-top-color: var(--bad); }
+.use-why { font-size: 0.8rem; color: var(--muted); }
+.use-bl { margin: 0; padding-left: 18px; font-size: 0.88rem; display: grid; gap: 2px; }
+.summary-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+.fix { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.fix li { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; align-items: start; }
+.fix-n { font: 700 1.1rem var(--f-display); color: var(--accent); border: 1.5px solid var(--accent); border-radius: 50%; width: 32px; height: 32px; display: grid; place-items: center; }
+.fix-t { font-weight: 600; text-decoration: none; color: var(--ink); }
+.fix-t:hover { text-decoration: underline; }
+.fix p { color: var(--muted); font-size: 0.92rem; }
+
+/* signals */
+.signals { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+.sig { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r); padding: 16px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.sig-state { font: 600 0.72rem var(--f-mono); text-transform: uppercase; letter-spacing: 0.07em; color: var(--good); }
+.sig-caution .sig-state { color: var(--warn); }
+.sig-head { font: 700 1.35rem/1.2 var(--f-display); }
+.sig-detail, .sig-shows { font-size: 0.88rem; color: var(--muted); }
+.sig-disc { font-size: 0.8rem; color: var(--muted); border-top: 1px dashed var(--rule); padding-top: 8px; margin-top: 4px; }
+.sig-locked { background: transparent; border-style: dashed; }
+.sig-locked h3 { color: var(--muted); }
+.sig-locked .sig-state { color: var(--na); }
+.sig-reason { font-size: 0.88rem; }
+.tbl { overflow-x: auto; }
+.sig table { width: 100%; border-collapse: collapse; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+.sig td { padding: 5px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.sig td + td { text-align: right; padding-left: 10px; color: var(--muted); }
+
+/* drivers */
+.drivers { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r); padding: 20px; display: grid; gap: 14px; }
+.drivers-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.btn { font: 600 0.92rem var(--f-body); background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
+.btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+.btn-ghost { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
+.chart { overflow-x: auto; min-width: 0; }
+.drivers > *, .upload > *, .summary-grid > *, section { min-width: 0; }
+.chart svg { min-width: 620px; width: 100%; height: auto; display: block; font-family: var(--f-body); }
+.chart .dl { font-size: 13px; fill: var(--ink); }
+.chart .dtag { font: 500 11.5px var(--f-mono); fill: var(--muted); }
+.chart .tick, .chart .axs { font: 11.5px var(--f-mono); fill: var(--muted); }
+.chart .axt { font-size: 12.5px; fill: var(--muted); }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .one { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 3 3; }
+.chart .wh { fill: var(--muted); transform-box: view-box; transform-origin: 0 0; transition: transform 0.9s cubic-bezier(.2,.7,.2,1); }
+.chart .dot { transition: transform 0.9s cubic-bezier(.2,.7,.2,1); }
+.chart .dot circle { fill: var(--surface); stroke: var(--ink); stroke-width: 2; }
+.chart .drow-holds .dot circle { fill: var(--accent); stroke: var(--accent); }
+.chart .drow-holds .wh { fill: var(--accent); }
+.chart .drow-holds .dl, .chart .drow-holds .dtag { fill: var(--accent); font-weight: 600; }
+.chart .drow-falls_away .dot circle, .chart .drow-reverses .dot circle { stroke: var(--na); fill: var(--surface); }
+.chart .drow-falls_away .dl, .chart .drow-reverses .dl { fill: var(--muted); }
+.drivers-caption { max-width: 72ch; }
+@media (prefers-reduced-motion: reduce) { .chart .wh, .chart .dot { transition: none; } }
+
+/* checks */
+.band { display: grid; gap: 6px; }
+.band + .band { margin-top: 22px; }
+.band > h3 { font: 500 0.78rem var(--f-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+.chk { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+.chk summary { display: grid; grid-template-columns: 128px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 14px; cursor: pointer; list-style: none; }
+.chk summary::-webkit-details-marker { display: none; }
+.chk-t { font-weight: 500; }
+.chk-v { font: 500 0.85rem var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.chk[open] summary { border-bottom: 1px solid var(--rule); }
+.chk-body { padding: 14px; display: grid; gap: 12px; max-width: 80ch; }
+.chk dl { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: 0.9rem; }
+.chk dt { color: var(--muted); }
+.chk dd { margin: 0; }
+.chk:target { outline: 2px solid var(--accent); }
+
+/* upload */
+.upload { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r); padding: 20px; display: grid; gap: 16px; }
+.files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.files label { display: grid; gap: 6px; font-weight: 600; }
+.files label span { font-weight: 400; color: var(--muted); font-size: 0.85rem; }
+.files input { font: inherit; font-size: 0.9rem; max-width: 100%; }
+table.map { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+table.map th, table.map td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--rule); }
+table.map select { font: inherit; max-width: 100%; padding: 4px; }
+.req { font: 500 0.7rem var(--f-mono); color: var(--bad); text-transform: uppercase; margin-left: 4px; }
+.pii { font-size: 0.88rem; color: var(--warn); }
+.status { font-size: 0.88rem; color: var(--muted); }
+
+/* vendor + footer */
+.vendor { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 70ch; }
+footer { border-top: 1px solid var(--rule); padding-top: 20px; display: grid; gap: 10px; font-size: 0.88rem; color: var(--muted); }
+footer .row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+#report-json { width: 100%; min-height: 120px; font: 12px var(--f-mono); }
+#report { display: grid; gap: 44px; }
+#report[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .chk summary { grid-template-columns: minmax(0, 1fr) auto; }
+  .chk summary .chip { grid-column: 1 / -1; justify-self: start; }
+  .chk dl { grid-template-columns: minmax(0, 1fr); }
+  .chk dt { margin-top: 6px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><h1>Support Signal</h1><span class="ver">draft · rules 0.2</span></div>
+    <p class="lede"><strong>Before you buy the AI, check what you're feeding it.</strong> Support Signal reads a support case export and tells you which questions it can honestly answer: resolution time, transfers, CSAT, churn and AI self-help.</p>
+    <p class="sub">Each check that passes switches on the signals that data can carry. Checks that fail keep their signals locked, with the reason and the fix. The demo below is Larkspur, a made-up scheduling software company with deliberately messy data.</p>
+    <div class="source">
+      <div class="seg" role="group" aria-label="Data to check">
+        <button type="button" data-src="demo-snapshot" aria-pressed="true">Demo: snapshot export</button>
+        <button type="button" data-src="demo-history" aria-pressed="false">Demo: export with history</button>
+        <button type="button" data-src="upload" aria-pressed="false">Check your own export</button>
+      </div>
+    </div>
+    <p class="privacy">Everything runs in your browser. Nothing is uploaded, stored or sent anywhere.</p>
+  </header>
+
+  <section id="upload-panel" class="upload" hidden aria-labelledby="up-h">
+    <div class="section-head"><p class="eyebrow">Your export</p><h2 id="up-h">Check your own data</h2>
+      <p>Export cases as CSV from your helpdesk. Remove names, emails and any text you don't want analysed first. The file is read by this page only.</p></div>
+    <div class="files">
+      <label for="file-cases">Cases (CSV)<span>One row per case. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
+      <label for="file-history">Change history (optional CSV)<span>Columns: case_id, changed_at, field, old_value, new_value.</span><input type="file" id="file-history" accept=".csv,text/csv"></label>
+    </div>
+    <p class="status" id="upload-status" aria-live="polite">Choose a cases file to begin.</p>
+    <p class="status" id="history-status" aria-live="polite"></p>
+    <div id="mapping"></div>
+    <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
+  </section>
+
+  <div id="report">
+    <section id="summary" aria-labelledby="sum-h">
+      <div class="section-head"><p class="eyebrow">Fit for use</p><h2 id="sum-h">What this data can support</h2><p class="run-meta" id="run-meta"></p></div>
+      <div class="summary-grid">
+        <div class="uses" id="uses"></div>
+        <div><h3 style="margin-bottom:12px">Fix first</h3><ol class="fix" id="fix"></ol></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="sig-h">
+      <div class="section-head"><p class="eyebrow">Signals</p><h2 id="sig-h">What it can tell you</h2>
+        <p>Every signal describes what is happening. None predicts which customers will leave.</p></div>
+      <div class="signals" id="signals"></div>
+    </section>
+
+    <section aria-labelledby="drv-h">
+      <div class="section-head"><p class="eyebrow">The method</p><h2 id="drv-h">Why most churn drivers aren't</h2>
+        <p>Busier accounts raise more cases, so almost anything tied to case volume looks like a churn driver. Compare like with like and most of them fall away.</p></div>
+      <div class="drivers">
+        <div class="drivers-bar"><span class="muted" style="font-size:.88rem">Each row is a flag on an account. Dots further right mean higher odds of churning.</span>
+          <button type="button" class="btn" id="drivers-toggle" aria-pressed="false">Apply controls</button></div>
+        <div id="drivers-body"></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="chk-h">
+      <div class="section-head"><p class="eyebrow">Every check</p><h2 id="chk-h">The checks behind the verdicts</h2>
+        <p>Each check shows its threshold, why it matters, how to fix it and its sources. Thresholds marked provisional are starting points, not evidence.</p></div>
+      <div id="checks"></div>
+    </section>
+
+    <section aria-labelledby="ven-h">
+      <div class="section-head"><p class="eyebrow">Before you sign</p><h2 id="ven-h">Questions for any AI support vendor</h2></div>
+      <ol class="vendor" id="vendor"></ol>
+    </section>
+
+    <footer>
+      <div class="row"><button type="button" class="btn btn-ghost" id="copy-report">Copy report as JSON</button><span id="copy-status" aria-live="polite"></span></div>
+      <textarea id="report-json" hidden readonly aria-label="Report JSON"></textarea>
+      <p id="stamp" class="mono"></p>
+      <p>Built by Merlin. Support Signal judges readiness per use, after Lawrence's Data Readiness Levels, and names checks after the DAMA data quality dimensions. The demo data is fictional and generated with a fixed seed.</p>
+    </footer>
+  </div>
+</div>
+
+<script type="text/plain" id="demo-cases">{{DEMO_CASES}}</script>
+<script type="text/plain" id="demo-history">{{DEMO_HISTORY}}</script>
+<script>
+const RULES = {{RULES}};
+{{ENGINE}}
+{{APP}}
+</script>
