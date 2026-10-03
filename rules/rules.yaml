@@ -342,7 +342,7 @@ uses:
     required: [AI1, AI2, AI4]
     optional: [AI3, AI5, AI6, B2, B3]
   - id: resolution_audit
-    title: Did the bot's claimed resolutions hold?
+    title: Bot resolution audit
     required: [B11]
     optional: []
     # This use needs a second file. Without one it still reports not_in_export, so

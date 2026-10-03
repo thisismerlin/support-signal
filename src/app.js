@@ -43,8 +43,10 @@
     // stays off the panel until that file arrives.
     $("#uses").innerHTML = r.uses.filter((u) => !u.needs_file || u.file_supplied).map((u) => {
       const bl = u.blockers.map((id) => `<li><a href="#check-${id}">${esc(r.checks[id].title)}</a></li>`).join("");
+      // Verdict words for a use. The check list keeps the outcome labels from the
+      // rules ("Not in export", "Needs a human"); these read as answers, not states.
       const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready",
-        not_in_export: "Not possible from this export", needs_human: "Needs a human" }[u.outcome];
+        not_in_export: "Not in this export", needs_human: "Can't tell yet" }[u.outcome];
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>

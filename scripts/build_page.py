@@ -24,7 +24,7 @@ body = (page.replace("{{RULES}}", rules).replace("{{ENGINE}}", engine).replace("
         .replace("{{DEMO_CASES}}", cases).replace("{{DEMO_HISTORY}}", history)
         .replace("{{DEMO_BOT_SNAPSHOT}}", bot_snapshot).replace("{{DEMO_BOT_HISTORY}}", bot_history))
 (root / "dist/artifact.html").write_text(body)
-full = ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+full = ('<!doctype html>\n<html lang="en" data-theme="dark">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
         '</head>\n<body>\n' + body + "\n</body>\n</html>\n")
 (root / "dist/index.html").write_text(full)
