@@ -300,6 +300,21 @@ footer p { max-width: 86ch; }
   .nav, .source, .btn, footer .row { display: none; }
   * { animation: none !important; }
 }
+/* Mapping table: how each field found its column, and what is still missing. */
+.map-note { font: 500 0.8125rem var(--f-body); color: var(--muted); white-space: nowrap; }
+.map-guess .map-note { color: var(--warn); }
+.map-missing .map-note { color: var(--risk); font-weight: 600; }
+.map-missing td:first-child { font-weight: 600; }
+.map-missing select { box-shadow: inset 0 0 0 1.5px var(--risk); }
+/* Shape, not just colour: a half-filled circle for a guess, a square for a gap. */
+.map-guess .map-note::before, .map-missing .map-note::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; vertical-align: baseline;
+}
+.map-guess .map-note::before { border-radius: 50%; background: linear-gradient(90deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
+.map-missing .map-note::before { border-radius: 2px; background: currentColor; }
+.map-alert, .map-hint { border-radius: 16px; padding: 14px 18px; font-size: 0.9375rem; }
+.map-alert { box-shadow: inset 0 0 0 1.5px var(--risk); color: var(--ink); }
+.map-hint { box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); }
 /* Six uses share one row once the bot audit is in play, so the verdict type steps
    down to keep every verdict within two lines. Only while they are side by side:
    below 980px the panel stacks and each verdict has the full width. */

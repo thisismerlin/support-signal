@@ -17,7 +17,9 @@
     return { records: b.records, mapping: autoMap(b.headers, RULES, "bot"), headers: b.headers }; };
   const DEMO_BOT = { "demo-snapshot": "demo-bot-snapshot", "demo-history": "demo-bot-history" };
 
-  const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, uploadBot: null, mapping: null, driversOn: false };
+  const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, uploadBot: null,
+    mapping: null, confidence: {}, driversOn: false,
+    required: new Set(Object.entries(RULES.fields).filter(([, f]) => f.required).map(([k]) => k)) };
 
   function runDemo(kind) {
     const headers = kind === "demo-snapshot" ? demoParsed.headers.filter((h) => !SNAPSHOT_DROP.includes(h)) : demoParsed.headers;
@@ -216,7 +218,10 @@
     const text = await readFile($("#file-cases"));
     if (!text) return;
     state.upload = parseCSV(text);
-    state.mapping = autoMap(state.upload.headers, RULES);
+    // Values are passed too: a column no name matches can still be inferred from them.
+    const m = mapColumns({ headers: state.upload.headers, rules: RULES, records: state.upload.records });
+    state.mapping = m.map;
+    state.confidence = m.confidence;
     renderMapping();
     $("#upload-status").textContent = `${state.upload.records.length.toLocaleString()} rows, ${state.upload.headers.length} columns read. Check the mapping, then run.`;
   }
@@ -230,17 +235,56 @@
     const text = await readFile($("#file-bot"));
     if (!text) { state.uploadBot = null; $("#bot-status").textContent = ""; return; }
     const b = parseCSV(text);
-    state.uploadBot = { records: b.records, mapping: autoMap(b.headers, RULES, "bot"), headers: b.headers };
+    state.uploadBot = { records: b.records, headers: b.headers,
+      mapping: mapColumns({ headers: b.headers, rules: RULES, scope: "bot", records: b.records }).map };
     const found = Object.keys(state.uploadBot.mapping).filter((k) => k.startsWith("bot_")).length;
     $("#bot-status").textContent = `${b.records.length.toLocaleString()} conversations read, ${found} bot fields recognised.`;
   }
+  // How a field got its column. A guess is worth checking; a missing required field is
+  // worth fixing before anything is run on it.
+  function mapState(k) {
+    if (!state.mapping[k]) return state.required.has(k) ? "missing" : "none";
+    return state.confidence[k] === "guess" ? "guess" : "name";
+  }
+  const MAP_NOTE = {
+    name: "Matched by name",
+    guess: "Guessed from values",
+    missing: "Not found, and needed",
+    none: "Not found",
+  };
+
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
     const pii = state.upload.headers.filter((h) => /e-?mail|phone|mobile|name$|first name|last name|address/i.test(h));
-    $("#mapping").innerHTML = `<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th></tr></thead><tbody>${
-      Object.entries(RULES.fields).filter(([, f]) => (f.file || "case") !== "bot").map(([k, f]) => `<tr><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td><td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td></tr>`).join("")
-    }</tbody></table></div>${pii.length ? `<p class="pii">These columns look like personal data and are ignored unless you map them: ${pii.map(esc).join(", ")}.</p>` : ""}`;
-    $("#mapping").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => { if (s.value) state.mapping[s.dataset.k] = s.value; else delete state.mapping[s.dataset.k]; }));
+    // Required fields first: nothing else matters until those are right.
+    const fields = Object.entries(RULES.fields).filter(([, f]) => (f.file || "case") !== "bot")
+      .sort((a, b) => (b[1].required ? 1 : 0) - (a[1].required ? 1 : 0));
+    const rows = fields.map(([k, f]) => {
+      const st = mapState(k);
+      return `<tr class="map-${st}"><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td>
+        <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
+        <td class="map-note">${esc(MAP_NOTE[st])}</td></tr>`;
+    }).join("");
+    const missing = fields.filter(([k]) => mapState(k) === "missing").map(([, f]) => f.label);
+    const guesses = fields.filter(([k]) => mapState(k) === "guess").length;
+    $("#mapping").innerHTML = `${
+      missing.length ? `<p class="map-alert">Required ${missing.length > 1 ? "fields" : "field"} not found: <strong>${missing.map(esc).join(", ")}</strong>. Pick the right column below, or the checks that need ${missing.length > 1 ? "them" : "it"} can't run.</p>` : ""
+    }${
+      guesses ? `<p class="map-hint">${guesses} ${guesses > 1 ? "fields were" : "field was"} guessed from the values rather than the column name. Worth a look before you run.</p>` : ""
+    }<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th><th>How</th></tr></thead><tbody>${rows}</tbody></table></div>${
+      pii.length ? `<p class="pii">These columns look like personal data and are ignored unless you map them: ${pii.map(esc).join(", ")}.</p>` : ""}`;
+    $("#mapping").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => {
+      const k = s.dataset.k;
+      if (s.value) {
+        // One column, one field, by hand as well as automatically. Reading the same
+        // column as both created and closed would quietly corrupt every duration.
+        for (const [other, col] of Object.entries(state.mapping)) {
+          if (other !== k && col === s.value) { delete state.mapping[other]; delete state.confidence[other]; }
+        }
+        state.mapping[k] = s.value; state.confidence[k] = "name";
+      } else { delete state.mapping[k]; delete state.confidence[k]; }
+      renderMapping();   // the How column and the alerts have to keep up
+    }));
     $("#run-upload").disabled = false;
   }
   function runUpload() {
