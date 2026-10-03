@@ -16,6 +16,17 @@ Three bands, after Lawrence's *Data Readiness Levels*:
 
 Outcomes: green, amber, red, *not in export* (the export lacks it; not a judgement on your system) and *needs a human*.
 
+## Setup
+The Python scripts need PyYAML and numpy. Create a virtualenv and install them:
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+npm test
+```
+`npm test` and `npm run build` shell out to `python3`, so the virtualenv has to be
+active in the shell you run them from.
+
 ## Develop
 ```
 npm run data    # regenerate the demo dataset (fixed seed)

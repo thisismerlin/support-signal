@@ -1,0 +1,5 @@
+# Python dependencies for the data generator and rule build.
+# Everything else the scripts import is standard library.
+
+PyYAML>=6.0      # scripts/build_rules.py
+numpy>=2.0       # generator/generate_demo.py
