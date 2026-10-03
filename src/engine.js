@@ -127,7 +127,12 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
   const checkDef = Object.fromEntries(rules.checks.map((c) => [c.id, c]));
   const set = (id, outcome, value, display, detail, extra = {}) => {
     const d = checkDef[id];
-    R[id] = { id, band: d.band, title: outcome === "pass" ? d.title : d.failure_title || d.title, rule_title: d.title,
+    // A check may carry its own amber title, for when "failed" would misdescribe
+    // what the export holds (B11: the account and the timings are there).
+    const title = outcome === "pass" ? d.title
+      : outcome === "warn" && d.warn_title ? d.warn_title
+      : d.failure_title || d.title;
+    R[id] = { id, band: d.band, title, rule_title: d.title,
       outcome, value, display, detail, threshold: describeThreshold(d.threshold), ...extra };
   };
   const fill = (k) => (has(k) && n ? cases.filter((c) => real(c[k])).length / n : null);
@@ -350,6 +355,10 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
     let outcome = worst.outcome === "needs_human" ? "warn" : worst.outcome;
     const optBad = us.optional.map((id) => R[id]).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
+    // Matching returns by timing alone isn't implemented, so the audit returns
+    // can't tell for every conversation. That is this tool's limit, not a flaw in
+    // the export, so it reports "needs a human" rather than amber "usable with care".
+    if (us.id === "resolution_audit" && resolution_audit.basis === "account_and_timing") outcome = "needs_human";
     const blockers = req.filter((c) => rank[c.outcome] >= 1).concat(outcome !== "fail" && outcome !== "not_in_export" ? optBad : []);
     return { id: us.id, title: us.title, outcome, blockers: blockers.map((c) => c.id),
       ...(us.needs_file ? { needs_file: us.needs_file, file_supplied: fileSupplied(us.needs_file) } : {}) };

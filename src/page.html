@@ -295,6 +295,38 @@ footer p { max-width: 86ch; }
   .nav, .source, .btn, footer .row { display: none; }
   * { animation: none !important; }
 }
+/* ---------- resolution audit ----------
+   Added for the audit band. Uses only tokens the stylesheet already defines:
+   no new colours, 24px tiles, state carried by shape first. */
+.audit { display: grid; gap: 16px; }
+.audit-tile { background: var(--tile); border-radius: 24px; padding: 28px 28px 30px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.audit-verdict .chip { margin-bottom: 10px; justify-self: start; }
+.audit-verdict h3 { font: 600 1.3rem/1.18 var(--f-display); letter-spacing: -0.022em; text-wrap: balance; }
+.audit-verdict p { color: var(--muted); font-size: 0.9375rem; }
+.audit-figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 16px; }
+.audit-fig .n { font: 650 3.25rem/1 var(--f-display); letter-spacing: -0.04em; }
+.audit-fig .k { font: 600 1.0625rem/1.2 var(--f-display); letter-spacing: -0.018em; margin-top: 10px; }
+.audit-fig .s { color: var(--muted); font-size: 0.9375rem; }
+.audit-fig-contradicted .n { color: var(--risk); }
+.audit-fig-not_contradicted .n { color: var(--na); }
+.audit-fig-cant_tell .n { color: var(--na); }
+.audit-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+.audit-tile h4 { font: 600 1.0625rem/1.2 var(--f-display); letter-spacing: -0.018em; margin: 0 0 4px; }
+.audit-rows { display: grid; gap: 0; margin-top: 6px; }
+.audit-rows div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--rule); font-size: 0.9375rem; }
+.audit-rows div:first-child { border-top: 0; }
+.audit-rows .v { font: 600 0.9375rem var(--f-mono); color: var(--ink); }
+.audit-rows .muted { color: var(--muted); }
+.audit-disc { background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+.audit-disc p { color: var(--muted); font-size: 0.9375rem; }
+.audit-demo { font: 600 0.8125rem/1.35 var(--f-body); color: var(--muted); display: flex; gap: 8px; align-items: baseline; }
+.audit-demo::before { content: ""; width: 7px; height: 7px; flex: none; border-radius: 2px; box-shadow: inset 0 0 0 1.5px currentColor; transform: translateY(-1px); }
+.audit-empty { text-align: center; padding: clamp(28px, 4vw, 44px); }
+.audit-empty h3 { font: 600 1.3rem/1.18 var(--f-display); letter-spacing: -0.022em; }
+.audit-empty p { color: var(--muted); max-width: 46ch; margin-inline: auto; }
+/* A use that can't be judged automatically: outlined square, as the chip already draws it. */
+.use-needs_human { color: var(--p-na); }
+.use-needs_human::before { border-radius: 4px; box-shadow: inset 0 0 0 2.5px currentColor; }
 </style>
 
 <div class="wrap">
@@ -331,9 +363,11 @@ footer p { max-width: 86ch; }
     <div class="files">
       <label for="file-cases">Cases (CSV)<span>One row per case. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
       <label for="file-history">Change history (optional CSV)<span>Columns: case_id, changed_at, field, old_value, new_value.</span><input type="file" id="file-history" accept=".csv,text/csv"></label>
+      <label for="file-bot">Bot conversations (optional CSV)<span>One row per AI conversation. Needed for the resolution audit.</span><input type="file" id="file-bot" accept=".csv,text/csv"></label>
     </div>
     <p class="status" id="upload-status" aria-live="polite">Choose a cases file to begin.</p>
     <p class="status" id="history-status" aria-live="polite"></p>
+    <p class="status" id="bot-status" aria-live="polite"></p>
     <div id="mapping"></div>
     <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
   </section>
@@ -345,7 +379,13 @@ footer p { max-width: 86ch; }
       <div class="fixfirst"><h3>Fix these first.</h3><ol class="fix" id="fix"></ol></div>
     </section>
 
-    <section class="sec sec-alt" id="signals-section" aria-labelledby="sig-h">
+    <section class="sec sec-alt" id="audit-section" aria-labelledby="aud-h">
+      <div class="section-head"><h2 id="aud-h">Did the bot's claimed resolutions hold?</h2>
+        <p>When an AI agent says it resolved something, the only honest check is what the customer did next.</p></div>
+      <div id="audit"></div>
+    </section>
+
+    <section class="sec" id="signals-section" aria-labelledby="sig-h">
       <div class="section-head"><h2 id="sig-h">What it can tell you.</h2>
         <p>Every signal describes what is happening. None predicts which customers will leave.</p></div>
       <div class="signals" id="signals"></div>
@@ -384,6 +424,8 @@ footer p { max-width: 86ch; }
 
 <script type="text/plain" id="demo-cases">{{DEMO_CASES}}</script>
 <script type="text/plain" id="demo-history">{{DEMO_HISTORY}}</script>
+<script type="text/plain" id="demo-bot-snapshot">{{DEMO_BOT_SNAPSHOT}}</script>
+<script type="text/plain" id="demo-bot-history">{{DEMO_BOT_HISTORY}}</script>
 <script>
 const RULES = {{RULES}};
 {{ENGINE}}

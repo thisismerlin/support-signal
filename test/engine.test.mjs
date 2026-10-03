@@ -42,6 +42,38 @@ for (const which of ["snapshot", "history"]) {
   });
 }
 
+// The audit needs a file the case export can't supply. Absent, the use still
+// reports, but flagged so the page can leave it off the verdict panel: a missing
+// second file is not a verdict on this one.
+test("resolution_audit is flagged unsupplied when no bot file is given", () => {
+  const { report } = audit("snapshot");
+  const u = report.uses.find((x) => x.id === "resolution_audit");
+  assert.equal(u.needs_file, "bot");
+  assert.equal(u.file_supplied, false);
+  assert.equal(report.resolution_audit.available, false);
+  assert.ok(!report.fixFirst.includes("B11"), "a missing bot file must not become a fix-first item");
+});
+
+test("a supplied bot file flags the use as supplied", () => {
+  for (const f of Object.values(BOT_FILES)) {
+    const u = audit("snapshot", botFile(f)).report.uses.find((x) => x.id === "resolution_audit");
+    assert.equal(u.file_supplied, true, f);
+  }
+});
+
+// Amber is this tool's limit, not a flaw in the export, so it must not surface as
+// the amber "usable with care" verdict the other uses mean by it.
+test("matching by account and timing reports needs_human, never warn", () => {
+  const { report } = audit("snapshot", botFile(BOT_FILES.snapshot));
+  assert.equal(report.resolution_audit.basis, "account_and_timing");
+  assert.equal(report.checks.B11.outcome, "warn");
+  assert.equal(report.uses.find((u) => u.id === "resolution_audit").outcome, "needs_human");
+  assert.equal(report.resolution_audit.buckets.cant_tell, report.resolution_audit.claimed,
+    "nothing may be judged when the basis is timing");
+  assert.equal(report.resolution_audit.buckets.contradicted, 0);
+  assert.equal(report.resolution_audit.buckets.not_contradicted, 0);
+});
+
 test("thresholds: higher and lower directions", () => {
   assert.equal(evalThreshold(0.95, { dir: "higher", pass: 0.9, warn: 0.6 }), "pass");
   assert.equal(evalThreshold(0.7, { dir: "higher", pass: 0.9, warn: 0.6 }), "warn");
@@ -129,6 +161,14 @@ for (const [which, f] of Object.entries(BOT_FILES)) {
   test(`bot ${which}: use resolution_audit is ${want.use}`, () =>
     assert.equal(report.uses.find((u) => u.id === "resolution_audit").outcome, want.use));
   test(`bot ${which}: audit works from ${want.basis}`, () => assert.equal(a.basis, want.basis));
+
+  // Amber must not read as "aren't linked": the account and the timings are there.
+  test(`bot ${which}: B11 titles the ${want.B11} outcome from the rules`, () => {
+    const want_title = want.B11 === "pass" ? B11.title : want.B11 === "warn" ? B11.warn_title : B11.failure_title;
+    assert.ok(want_title, "the rules must carry a title for this outcome");
+    assert.equal(report.checks.B11.title, want_title);
+    assert.equal(report.checks.B11.rule_title, B11.title);
+  });
 
   test(`bot ${which}: totals match generation_stats.json`, () => {
     const e = stats.bot.expected_audit[which];

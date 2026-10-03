@@ -10,7 +10,7 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.4.0
+  version: 0.5.0
   status: draft
   updated: 2026-10-03
   outcomes:
@@ -304,15 +304,21 @@ checks:
     dimension: completeness
     title: Bot conversations can be linked to later cases
     failure_title: Bot conversations aren't linked to later cases
+    warn_title: Bot conversations can only be matched by account and timing
     metric: Follow-up case IDs on each conversation (green); account plus conversation start and end times, so returns have to be matched (amber); neither in the export (not in export)
     why: The audit asks what happened after the bot claimed a resolution. Without a way to reach from a conversation to the cases that followed it, a claimed resolution can't be confirmed or contradicted, and silence can't be told apart from success.
     fix: Export the follow-up case IDs on each conversation. Failing that, export the account ID with the conversation's start and end times, which lets returns be matched by account and timing.
     refs: [zendesk-follow-up, dama-nl]
     outcomes:
       pass: Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.
-      warn: Conversations carry an account and timings but no case links, so returns have to be matched by account and timing. Matching is an inference, and near-simultaneous cases can be attributed to the wrong conversation.
+      warn: "Conversations carry an account and start and end times, but no case links. Matching returns by timing alone isn't supported yet, so this export can't be audited. Every claimed resolution is reported as can't tell; export the follow-up case IDs and the audit runs."
       not_in_export: This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files.
-    note: The engine reports these words verbatim. Only the green path is implemented; amber reports the caveat and the audit returns "can't tell".
+    note: >-
+      The engine reports these words verbatim, and uses warn_title on the amber
+      path, because the account and the timings are present and "aren't linked"
+      would misdescribe the export. Only the green path is implemented. Amber is a
+      limit of this tool, not a flaw in the data, so the use reports "needs a
+      human" rather than amber "usable with care".
 
 uses:
   - id: resolution

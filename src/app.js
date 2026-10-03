@@ -11,13 +11,19 @@
   const demoParsed = parseCSV(document.getElementById("demo-cases").textContent);
   const demoHistory = parseCSV(document.getElementById("demo-history").textContent).records;
   const SNAPSHOT_DROP = ["reopens", "assignee_stations", "group_stations", "requester_wait_minutes"];
+  // One bot export per case export. The snapshot pair has no case links, so B11 is amber
+  // there and green on the pair with history; the switch alone shows both states.
+  const demoBot = (id) => { const b = parseCSV(document.getElementById(id).textContent);
+    return { records: b.records, mapping: autoMap(b.headers, RULES, "bot"), headers: b.headers }; };
+  const DEMO_BOT = { "demo-snapshot": "demo-bot-snapshot", "demo-history": "demo-bot-history" };
 
-  const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, mapping: null, driversOn: false };
+  const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, uploadBot: null, mapping: null, driversOn: false };
 
   function runDemo(kind) {
     const headers = kind === "demo-snapshot" ? demoParsed.headers.filter((h) => !SNAPSHOT_DROP.includes(h)) : demoParsed.headers;
     const mapping = autoMap(headers, RULES);
-    return runAudit({ records: demoParsed.records, mapping, history: kind === "demo-history" ? demoHistory : null, rules: RULES, source: kind });
+    return runAudit({ records: demoParsed.records, mapping, history: kind === "demo-history" ? demoHistory : null,
+      bot: demoBot(DEMO_BOT[kind]), rules: RULES, source: kind });
   }
 
   // ---------- render ----------
@@ -28,14 +34,17 @@
     if (!r) return;
     const src = { "demo-snapshot": "Demo company, snapshot export", "demo-history": "Demo company, export with history", upload: "Your export" }[state.source];
     $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
-    renderUses(r); renderFix(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
+    renderUses(r); renderFix(r); renderAudit(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
     $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
   }
 
   function renderUses(r) {
-    $("#uses").innerHTML = r.uses.map((u) => {
+    // A use that needs a file nobody supplied isn't a verdict on this export, so it
+    // stays off the panel until that file arrives.
+    $("#uses").innerHTML = r.uses.filter((u) => !u.needs_file || u.file_supplied).map((u) => {
       const bl = u.blockers.map((id) => `<li><a href="#check-${id}">${esc(r.checks[id].title)}</a></li>`).join("");
-      const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready", not_in_export: "Not possible from this export" }[u.outcome];
+      const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready",
+        not_in_export: "Not possible from this export", needs_human: "Needs a human" }[u.outcome];
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>
@@ -124,6 +133,77 @@
     }).join("");
   }
 
+
+  // ---------- the resolution audit ----------
+  // Reads report.resolution_audit and B11 only. Every figure on the demo sources is
+  // planted by the generator, so each one is labelled as such: nothing here is a
+  // finding about AI agents in general.
+  function renderAudit(r) {
+    const a = r.resolution_audit, b = r.checks.B11, box = $("#audit");
+    const demo = state.source !== "upload";
+    const demoNote = demo
+      ? `<p class="audit-demo">Planted demo data. Larkspur is fictional and these counts are exactly what the generator planted, not evidence about AI agents.</p>`
+      : "";
+
+    // No bot file at all. The case export isn't the problem, so don't say it is.
+    if (!a || !a.available) {
+      box.className = "audit";
+      // The engine's reason only earns a line when it says something the heading doesn't.
+      const why = a && a.reason && !/no bot conversations export/i.test(a.reason) ? `<p>${esc(a.reason)}</p>` : "";
+      box.innerHTML = `<div class="audit-tile audit-empty">
+        <h3>No bot conversations file yet.</h3>
+        <p>Add one and this screen fills in: one row per AI conversation, with the cases that followed it. Nothing is wrong with the export you gave; this question just needs a second file.</p>${why}
+        <p><button type="button" class="btn" id="audit-upload">Add a bot conversations file</button></p></div>`;
+      $("#audit-upload").addEventListener("click", () => { setSource("upload"); $("#file-bot").focus(); });
+      return;
+    }
+
+    const verdict = `<div class="audit-tile audit-verdict">${chip(b.outcome)}
+      <h3>${esc(b.title)}</h3><p>${esc(b.detail)}</p></div>`;
+
+    // Amber means matching would have to be inferred from timing, which isn't
+    // implemented. Show can't tell and say so; never dress it as "usable with care".
+    if (a.basis !== "case_links") {
+      box.className = "audit";
+      box.innerHTML = `${verdict}
+        <div class="audit-figs">
+          ${fig("cant_tell", a.buckets.cant_tell, "Can't tell", "Every conversation the bot claimed it resolved.")}
+          ${fig("claimed", a.claimed, "Claimed resolved", "Conversations the bot said it had resolved.")}
+        </div>
+        <div class="audit-tile audit-disc"><p>Matching returns by account and timing alone isn't supported yet, so none of these conversations could be audited. This is a limit of this tool, not a fault in the export.</p></div>
+        ${demoNote}`;
+      return;
+    }
+
+    const cum = a.contradicted_cumulative.map((w) =>
+      row(`Within ${w.days} days`, w.contradicted.toLocaleString(), pctOf(w.contradicted, a.claimed))).join("");
+    const by = [["reopened", "Reopened"], ["escalated", "Escalated to a human"], ["same_theme", "Same theme back"]]
+      .map(([k, lab]) => row(lab, a.contradicted_by[k].toLocaleString(), pctOf(a.contradicted_by[k], a.claimed))).join("");
+
+    box.className = "audit";
+    box.innerHTML = `${verdict}
+      <div class="audit-figs">
+        ${fig("claimed", a.claimed, "Claimed resolved", "Conversations the bot said it had resolved.")}
+        ${fig("contradicted", a.buckets.contradicted, "Contradicted", "Something happened next that the claim can't survive.")}
+        ${fig("not_contradicted", a.buckets.not_contradicted, "Not contradicted", "Nothing followed within " + a.params.return_windows_days.slice(-1)[0] + " days.")}
+      </div>
+      ${a.buckets.cant_tell ? `<div class="audit-figs">${fig("cant_tell", a.buckets.cant_tell, "Can't tell", "The theme couldn't be read, so no return was looked for.")}</div>` : ""}
+      <div class="audit-split">
+        <div class="audit-tile"><h4>Contradicted, by when</h4>
+          <p class="s muted">Cumulative: each window includes the ones before it.</p>
+          <div class="audit-rows">${cum}</div></div>
+        <div class="audit-tile"><h4>Contradicted, by what happened</h4>
+          <p class="s muted">Counted in this order, so a conversation that was both is counted once.</p>
+          <div class="audit-rows">${by}</div></div>
+      </div>
+      <div class="audit-tile audit-disc"><p>${esc(a.disclaimer)}</p></div>
+      ${demoNote}`;
+  }
+  const pctOf = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "n/a");
+  const row = (k, v, s2) => `<div><span>${esc(k)}</span><span><span class="v">${esc(v)}</span> <span class="muted">${esc(s2)}</span></span></div>`;
+  const fig = (kind, n, k, s2) => `<div class="audit-tile audit-fig audit-fig-${kind}">
+    <span class="n">${Number(n).toLocaleString()}</span><span class="k">${esc(k)}</span><span class="s">${esc(s2)}</span></div>`;
+
   function renderVendor(r) { $("#vendor").innerHTML = r.vendor_questions.map((q) => `<li>${esc(q)}</li>`).join(""); }
 
   // ---------- upload ----------
@@ -143,18 +223,28 @@
     state.uploadHistory = text ? parseCSV(text).records : null;
     $("#history-status").textContent = state.uploadHistory ? `${state.uploadHistory.length.toLocaleString()} change records read.` : "";
   }
+  // Mapped in bot scope, so bot synonyms are never offered a case file's columns.
+  async function onBot() {
+    const text = await readFile($("#file-bot"));
+    if (!text) { state.uploadBot = null; $("#bot-status").textContent = ""; return; }
+    const b = parseCSV(text);
+    state.uploadBot = { records: b.records, mapping: autoMap(b.headers, RULES, "bot"), headers: b.headers };
+    const found = Object.keys(state.uploadBot.mapping).filter((k) => k.startsWith("bot_")).length;
+    $("#bot-status").textContent = `${b.records.length.toLocaleString()} conversations read, ${found} bot fields recognised.`;
+  }
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
     const pii = state.upload.headers.filter((h) => /e-?mail|phone|mobile|name$|first name|last name|address/i.test(h));
     $("#mapping").innerHTML = `<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th></tr></thead><tbody>${
-      Object.entries(RULES.fields).map(([k, f]) => `<tr><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td><td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td></tr>`).join("")
+      Object.entries(RULES.fields).filter(([, f]) => (f.file || "case") !== "bot").map(([k, f]) => `<tr><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td><td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td></tr>`).join("")
     }</tbody></table></div>${pii.length ? `<p class="pii">These columns look like personal data and are ignored unless you map them: ${pii.map(esc).join(", ")}.</p>` : ""}`;
     $("#mapping").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => { if (s.value) state.mapping[s.dataset.k] = s.value; else delete state.mapping[s.dataset.k]; }));
     $("#run-upload").disabled = false;
   }
   function runUpload() {
     try {
-      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, history: state.uploadHistory, rules: RULES, source: "upload" });
+      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, history: state.uploadHistory,
+        bot: state.uploadBot, rules: RULES, source: "upload" });
       state.driversOn = false; render();
       $("#summary").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     } catch (e) { $("#upload-status").textContent = `Couldn't run the checks: ${e.message}. Check that the required columns are mapped.`; }
@@ -173,6 +263,7 @@
   $("#drivers-toggle").addEventListener("click", () => { state.driversOn = !state.driversOn; updateDrivers(); });
   $("#file-cases").addEventListener("change", onCases);
   $("#file-history").addEventListener("change", onHistory);
+  $("#file-bot").addEventListener("change", onBot);
   $("#run-upload").addEventListener("click", runUpload);
   $("#copy-report").addEventListener("click", async () => {
     const text = JSON.stringify(state.report, null, 2);

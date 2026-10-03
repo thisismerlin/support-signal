@@ -24,7 +24,7 @@
 
   "_bot": "The bot exports, each read alongside the case snapshot. Counts aren't repeated here: the tests read them from generation_stats.json, which the generator writes.",
   "bot": {
-    "snapshot": { "B11": "warn", "use": "warn", "basis": "account_and_timing" },
+    "snapshot": { "B11": "warn", "use": "needs_human", "basis": "account_and_timing" },
     "with_history": { "B11": "pass", "use": "pass", "basis": "case_links" }
   },
 
