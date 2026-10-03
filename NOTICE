@@ -1,0 +1,24 @@
+Support Signal
+Copyright (c) 2026 Merlin Iles-Jonas
+Licensed under the MIT License. See LICENSE.
+
+This product includes third-party material, under its own licence.
+
+-------------------------------------------------------------------------------
+Inter (typeface)
+-------------------------------------------------------------------------------
+
+Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+Licensed under the SIL Open Font License, Version 1.1.
+Licence text: https://openfontlicense.org
+
+Version 4.001 of Inter is embedded as a base64 WOFF2 web font in
+design-handoff/fonts.css, which is inlined into src/page.html and so into the
+built pages dist/index.html and dist/artifact.html. The copyright and licence
+URL above are taken from the font's own name table (name IDs 0 and 14).
+
+The font is used as a fallback only, where the reader's system font is not
+available. It is not modified. Under the SIL Open Font License, the font and its
+derivatives may not be sold on their own, and any derivative released under the
+OFL must not use the Reserved Font Name.
