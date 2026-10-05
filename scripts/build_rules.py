@@ -48,6 +48,19 @@ SHAPES = {"id", "date", "category", "text", "number", "flag"}
 errs += [f"field {k} shape: {f['shape']}" for k, f in r["fields"].items()
          if "shape" in f and f["shape"] not in SHAPES]
 errs += [f"field {k} has no shape" for k, f in r["fields"].items() if "shape" not in f]
+# Every optional field the mapping table offers must say what it is and what it
+# unlocks. Required fields are the four the page already explains; bot fields are not
+# in the table. A field added without these would show as a bare label, which is the
+# state this replaced: a row offering "Follow-up of" and no way to know what it wants.
+for k, f in r["fields"].items():
+    if f.get("required") or f.get("file") == "bot":
+        continue
+    errs += [f"optional field {k} has no {key}" for key in ("means", "unlocks") if not f.get(key)]
+# A signal's requires_values names fields, and the engine locks the signal when one is
+# mapped but empty. A misspelt name here would silently never lock.
+for s in r["signals"]:
+    errs += [f"signal {s['id']} requires_values {v!r}, which is not a field" for v in s.get("requires_values", [])
+             if v not in r["fields"]]
 # Every vendor we claim to have sourced column names from must point at a real ref.
 errs += [f"column_name_sources {v} -> {k}" for v, k in r.get("column_name_sources", {}).items()
          if k not in r["refs"]]
@@ -65,6 +78,22 @@ for c in r["checks"]:
         continue
     errs += [f"check {c['id']} reads_fields {f!r}, which is not a field" for f in c["reads_fields"]
              if f not in r["fields"]]
+# The engine matches guess_requires_word against single lowercase words split out of a
+# header, so a capitalised or multi-word entry here would never match anything.
+for k, f in r["fields"].items():
+    w = f.get("guess_requires_word")
+    if w is None:
+        continue
+    if not isinstance(w, list) or not w:
+        errs.append(f"field {k} guess_requires_word must be a non-empty list")
+        continue
+    errs += [f"field {k} guess_requires_word {x!r} is not one lowercase word" for x in w
+             if not isinstance(x, str) or not x.islower() or " " in x]
+# A check the engine can report as empty needs a title for it: the pass and failure
+# titles are both claims about the values, and neither is true of a column with none.
+for c in r["checks"]:
+    if c.get("empty_title") is not None and not str(c["empty_title"]).strip():
+        errs.append(f"check {c['id']} has an empty empty_title")
 # C4 names the dirty-collapse case separately, and the engine reports both.
 for key in ("conflict_title", "conflict_fix"):
     if not next(c for c in r["checks"] if c["id"] == "C4").get(key):

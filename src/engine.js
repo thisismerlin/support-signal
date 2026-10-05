@@ -91,6 +91,7 @@ function scorePair(cand, variant) {
 }
 
 const NAME_FLOOR = 45;       // below this, a name match is a coincidence, not a match
+const TRUSTED_NAME = 80;     // exact (100) or the same words in another order (80)
 const inScope = (f, scope) => { const s = f.file || "case"; return s === scope || s === "both"; };
 
 // The full result: the map, plus how each field was matched and how strongly, and
@@ -107,6 +108,14 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
   // belonged to the case. Needs the values, like shape inference does, so autoMap()
   // below can't do it.
   const varying = records && records.length ? varyingWithinCase({ headers, records, rules, scope }) : null;
+
+  // One profile per column, shared by the name gate below and by inference. Built
+  // once: profiling 300 values a column twice is the same answer at twice the cost.
+  const profiles = new Map();
+  if (records && records.length) for (const h of headers) {
+    const p = profileColumn(records, h);
+    if (p) profiles.set(h, p);
+  }
 
   // Score every pair once.
   const pairs = [];
@@ -138,19 +147,35 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
       if (!refused[p.key]) refused[p.key] = { header: p.header, reason: "varies_within_case" };
       continue;
     }
+    // Below an exact or same-words match, a comment field's name match is a partial
+    // word overlap, which is a guess wearing a match's confidence: "CommentCreatedDate"
+    // overlaps comment_id's own name, so a column of dates was filed as an ID and the
+    // comment timestamp went unmapped. A loose match whose values contradict the
+    // field's shape is refused and the column left for a field that fits.
+    if (p.score < TRUSTED_NAME && isCommentField(rules.fields[p.key])
+        && contradictsShape(rules.fields[p.key].shape, profiles.get(p.header))) {
+      if (!refused[p.key]) refused[p.key] = { header: p.header, reason: "shape_mismatch" };
+      continue;
+    }
     map[p.key] = p.header; usedHeader.add(p.header);
     confidence[p.key] = "name"; scores[p.key] = p.score;
   }
-  // A refusal only stands if nothing else claimed the field in the end.
-  for (const k of Object.keys(refused)) if (map[k]) delete refused[k];
 
   // Anything still unmatched may be inferable from what the column contains.
   if (records && records.length) {
-    const guessed = inferFromValues({ fields, headers, records, map, usedHeader });
+    const guessed = inferFromValues({ fields, headers, records, map, usedHeader, varying, rules, profiles });
     for (const [key, header] of Object.entries(guessed)) {
       map[key] = header; usedHeader.add(header);
       confidence[key] = "guess"; scores[key] = null;
     }
+  }
+  // A refusal explains a gap, so it only stands while there is a gap to explain: the
+  // field is still unmapped *and* so is the column it turned down. Checked after
+  // inference rather than before it, or a field the guess pass went on to fill is
+  // reported as refused and mapped at once, and a column that found the comment field
+  // it belonged to is still described as one to go and map by hand.
+  for (const k of Object.keys(refused)) {
+    if (map[k] || usedHeader.has(refused[k].header)) delete refused[k];
   }
   return { map, confidence, scores, refused, shape: varying ? varying.shape : null };
 }
@@ -255,17 +280,56 @@ function fitsShape(shape, p) {
   }
 }
 
-function inferFromValues({ fields, headers, records, map, usedHeader }) {
+// What a column's values rule *out*. Stated as a contradiction rather than as a
+// required fit on purpose: a comment author column holding hundreds of agent IDs
+// fails the `category` test without being the wrong column, and refusing it would
+// lose a column we could have read. Only a positive clash counts.
+function contradictsShape(shape, p) {
+  if (!p) return false;                                   // too thin to profile: no evidence
+  const prose = p.avgWords >= 5;
+  switch (shape) {
+    case "text":     return p.boolish || p.dates >= 0.8 || p.numeric >= 0.9;
+    case "id":       return p.boolish || p.dates >= 0.8 || prose;
+    case "date":     return p.boolish || prose;
+    case "flag":     return p.dates >= 0.8 || prose;
+    case "category": return p.dates >= 0.8 || prose;
+    case "number":   return p.boolish || p.dates >= 0.8 || prose;
+    default:         return false;
+  }
+}
+
+// A field that declares `guess_requires_word` may only be *guessed* onto a column
+// whose name carries one of those words. Shape cannot separate two flag fields of
+// opposite polarity: both fit, so the winner was whichever was declared first, and
+// reading `comment_private` where `comment_public` was meant inverts every "latest
+// public comment" without saying anything. A name match needs no such guard, because
+// the header has already said which one it is.
+const guessWordOk = (f, header) => {
+  if (!f.guess_requires_word) return true;
+  const words = new Set(headerVariants(header).flatMap((v) => v.split(" ")));
+  return f.guess_requires_word.some((w) => words.has(w));
+};
+
+function inferFromValues({ fields, headers, records, map, usedHeader, varying, rules, profiles }) {
   const open = headers.filter((h) => !usedHeader.has(h));
   if (!open.length) return {};
-  const profiles = new Map();
-  for (const h of open) { const p = profileColumn(records, h); if (p) profiles.set(h, p); }
+  const fit = new Map();
+  for (const h of open) { const p = profiles.get(h); if (p) fit.set(h, p); }
 
   const guessed = {};
   const taken = new Set();
   for (const [key, f] of fields) {
     if (map[key] || !f.shape) continue;
-    const fits = [...profiles].filter(([h, p]) => !taken.has(h) && fitsShape(f.shape, p)).map(([h]) => h);
+    const fits = [...fit].filter(([h, p]) => {
+      if (taken.has(h)) return false;
+      // The same rule the name pass applies, applied here too. Without it a column
+      // refused for a case-level field by name is handed straight back to it by
+      // shape: a varying free-text column is refused for follow_up_of and then
+      // guessed as the subject, which is how the comment body went unread.
+      if (varying && varying.has(h) && isCaseLevelField(f, key)) return false;
+      if (!guessWordOk(f, h)) return false;
+      return fitsShape(f.shape, p);
+    }).map(([h]) => h);
     // Exactly one candidate or none. Two columns that both look like dates give us no
     // way to tell created from closed, and picking one would be a coin toss.
     if (fits.length === 1) { guessed[key] = fits[0]; taken.add(fits[0]); }
@@ -593,6 +657,21 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const derivedFields = new Set();
   if (!map.last_update_at && U.some((c) => c._lastUpdateFrom)) derivedFields.add("last_update_at");
   const has = (k) => !!map[k] || derivedFields.has(k);
+  // A column can be present and hold nothing. `has` answers whether the export
+  // carries the field, which is not the same question as whether anything is in it,
+  // and a check that reads the values to judge something else has no business
+  // passing on none of them: "0 distinct reasons, 0 used fewer than 5 times" came
+  // out green, and "Reasons describe customer needs" was printed about a column
+  // with no reasons in it at all. A check that *measures* emptiness is different and
+  // keeps its verdict: B2's whole job is the blank share, and B1's is the fill rate.
+  const hasValues = (k) => has(k) && U.some((c) => real(c[k]));
+  const emptyMapped = () => Object.keys(rules.fields).filter((k) => has(k) && !hasValues(k));
+  // Named with its column, because the fix is to that column, not to the field.
+  const emptyDetail = (k) => {
+    const label = rules.fields[k].label;
+    const where = map[k] ? `mapped to “${map[k]}”` : "derived from the comment rows";
+    return `${label} is ${where}, and every value is blank or a placeholder. There is nothing here to judge, so this is left for a human rather than passed.`;
+  };
 
   const R = {};
   const cautions = activeCautions(rules, L);
@@ -601,7 +680,12 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const d = checkDef[id];
     // A check may carry its own amber title, for when "failed" would misdescribe
     // what the export holds (B11: the account and the timings are there).
-    const title = outcome === "pass" ? d.title
+    // An empty column gets its own title first. Neither of the others can be used:
+    // both the pass title and the failure title are claims about the values, and
+    // "Reasons describe teams, not customers" is as false of an empty reason column
+    // as "Reasons describe customer needs" is.
+    const title = extra.empty_field && d.empty_title ? d.empty_title
+      : outcome === "pass" ? d.title
       : extra.conflict_cases && d.conflict_title ? d.conflict_title
       : outcome === "warn" && d.warn_title ? d.warn_title
       : d.failure_title || d.title;
@@ -717,7 +801,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // B3 near-duplicates
   const nearDups = [];
-  if (has("reason")) {
+  if (has("reason") && !hasValues("reason")) set("B3", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  else if (has("reason")) {
     const names = realReasons.map(([v]) => v);
     for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++)
       if (nearDuplicate(names[a], names[b])) nearDups.push([names[a], names[b]]);
@@ -792,6 +877,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // AI2
   if (!has("reason")) set("AI2", "not_in_export", null, "No reason", "No contact reason column.");
+  else if (!hasValues("reason")) set("AI2", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
   else {
     const words = rules.team_words;
     const teamy = (v) => words.some((w) => new RegExp(`\\b${w}\\b`, "i").test(v));
@@ -801,8 +887,10 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       tv.length ? `${pct(share)} of cases use team-type reasons: ${tv.map(([v]) => `"${v}"`).join(", ")}.` : "Reasons describe customer needs.");
   }
 
-  // AI3
-  set("AI3", has("reason") ? "needs_human" : "not_in_export", null, "Review",
+  // AI3. Telling someone to sample cases from similar-sounding reasons is useless
+  // advice when the reason column is empty, so it says what to fix instead.
+  if (has("reason") && !hasValues("reason")) set("AI3", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  else set("AI3", has("reason") ? "needs_human" : "not_in_export", null, "Review",
     nearDups.length ? `Start with the near-duplicates found: ${nearDups.map(([x, y]) => `"${x}" / "${y}"`).join(", ")}. Then sample cases from similar reasons.` : "Sample cases from similar-sounding reasons and check they really differ.");
 
   // AI4
@@ -816,7 +904,10 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const teamyR = (v) => rules.team_words.some((w) => new RegExp(`\\b${w}\\b`, "i").test(v));
   const needReasons = realReasons.filter(([v]) => !teamyR(v)).sort((a, b) => b[1] - a[1]);
   const needTotal = needReasons.reduce((s, [, k]) => s + k, 0);
-  if (!needTotal) set("AI5", has("reason") ? "needs_human" : "not_in_export", null, "n/a", "No usable reasons to measure.");
+  // An empty reason column and a column of nothing but team-type reasons both leave
+  // nothing to measure, but they are different problems with different fixes.
+  if (has("reason") && !hasValues("reason")) set("AI5", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  else if (!needTotal) set("AI5", has("reason") ? "needs_human" : "not_in_export", null, "n/a", "No usable reasons to measure.");
   else {
     const top10 = needReasons.slice(0, 10).reduce((s, [, k]) => s + k, 0) / needTotal;
     set("AI5", evalThreshold(top10, checkDef.AI5.threshold), top10, pct(top10), `The ten most common customer-need reasons hold ${pct(top10)} of cases that have one.`);
@@ -880,6 +971,23 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     return { setAside: true, soft: readsConflicted(us.optional.filter((id) => id !== "C4")) };
   };
 
+  // What a use's own checks read and found nothing in. A verdict assembled from
+  // checks that each say "can't be judged" should say why on the use itself: an AI
+  // readiness panel reading "usable with care" next to a full comment-text column
+  // gives no hint that the reason column it groups by is empty. Both halves are
+  // named, because "no reason" alone reads as if nothing is in the export at all.
+  const empties = emptyMapped();
+  const emptyNote = (us) => {
+    const reads = [...new Set(us.required.concat(us.optional || []).flatMap((id) => checkDef[id].reads_fields || []))];
+    const blank = reads.filter((k) => empties.includes(k));
+    if (!blank.length) return {};
+    const label = (k) => rules.fields[k].label.toLowerCase();
+    const list = (a) => a.map(label).join(", ").replace(/, ([^,]*)$/, " and $1");
+    const held = reads.filter((k) => rules.fields[k].shape === "text" && hasValues(k));
+    const lead = held.length ? `The ${list(held)} ${held.length > 1 ? "columns are" : "column is"} there, but ` : "";
+    const one = blank.length === 1;
+    return { empty_fields: blank, empty_note: `${lead}${lead ? "the" : "The"} ${list(blank)} ${one ? "field is" : "fields are"} mapped to ${one ? "a column" : "columns"} with no values in ${one ? "it" : "them"}, so the checks that read ${one ? "it" : "them"} can't be judged.` };
+  };
   const uses = rules.uses.map((us) => {
     const scoped = reach(us);
     const at = (id) => (scoped && scoped.setAside && id === "C4" ? { ...R[id], outcome: "pass" } : R[id]);
@@ -900,12 +1008,13 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       // Said plainly on the use, because "not held back by C4" is only trustworthy if
       // the reason it was set aside is visible next to the verdict.
       ...(scoped && scoped.setAside ? { conflicts_set_aside: [...conflictFields], conflicts_are_context_only: !!scoped.soft } : {}),
+      ...emptyNote(us),
       ...(us.needs_file ? { needs_file: us.needs_file, file_supplied: fileSupplied(us.needs_file) } : {}) };
   });
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
 
   // ---------- signals ----------
-  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, U, real, rules, hist, cautions }));
+  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, U, real, rules, hist, cautions }));
 
   // ---------- fix first ----------
   const blockCount = {};
@@ -1038,6 +1147,15 @@ function computeSignal(s, ctx) {
   const base = { id: s.id, title: s.title, shows: s.shows, disclaimer: s.disclaimer,
     ...(heard.length ? { cautions: heard } : {}) };
   for (const f of s.requires_fields || []) if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
+  // A field this signal groups or counts by, which is present and holds nothing. Left
+  // to run, theme movers reported "Stable" off two empty quarters and self-help
+  // reported "0 candidate reasons", both of which read as findings rather than as the
+  // absence of anything to find.
+  for (const f of s.requires_values || []) {
+    if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
+    if (!ctx.hasValues(f)) return { ...base, state: "locked",
+      reason: `The ${ctx.rules.fields[f].label.toLowerCase()} column is there but every value in it is blank, so there is nothing to group by.` };
+  }
   if (s.unlocked_by_uses) {
     const blocked = s.unlocked_by_uses.map((id) => useById[id]).filter((x) => x.outcome === "fail" || x.outcome === "not_in_export");
     if (blocked.length) return { ...base, state: "locked", reason: `Locked until ${blocked.map((b) => b.title.toLowerCase()).join(" and ")} ${blocked.length > 1 ? "pass" : "passes"}.`, blockers: blocked.flatMap((b) => b.blockers) };

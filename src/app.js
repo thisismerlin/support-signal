@@ -69,6 +69,7 @@
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>
+        ${u.empty_note ? `<p class="use-empty">${esc(u.empty_note)}</p>` : ""}
         ${bl ? `<p class="use-why">Held back by</p><ul class="use-bl">${bl}</ul>` : `<p class="use-why">Nothing holding it back.</p>`}
       </article>`;
     }).join("");
@@ -326,10 +327,14 @@
     none: "Not found",
   };
   // The reason, with the column named, because the fix is to move that column.
+  const REFUSAL = {
+    varies_within_case: (h) => `“${h}” changes between a case's comment rows, so it isn't a case field. Map it as a comment field, or leave it.`,
+    shape_mismatch: (h) => `“${h}” only partly matches this field's name, and its values are the wrong kind for it. Map it by hand if it really is this field.`,
+  };
   function mapNote(k) {
     const r = state.refused[k];
     if (!r) return MAP_NOTE[mapState(k)];
-    return `“${r.header}” changes between a case's comment rows, so it isn't a case field. Map it as a comment field, or leave it.`;
+    return (REFUSAL[r.reason] || REFUSAL.varies_within_case)(r.header);
   }
 
   function renderMapping() {
@@ -345,7 +350,12 @@
       const st = mapState(k);
       const mark = f.required ? " <span class='req'>required</span>"
         : (f.level || "case") === "comment" ? " <span class='lvl'>per comment</span>" : "";
-      return `<tr class="map-${st}"><td>${esc(f.label)}${mark}</td>
+      // What the column is, and what mapping it buys. An optional field is a choice,
+      // and the label alone doesn't say enough to make it: "Follow-up of" reads as
+      // jargon until it says it wants the ID of the original case.
+      const means = f.means ? ` <span class="map-means">(${esc(f.means)})</span>` : "";
+      const unlocks = f.unlocks ? `<span class="map-unlocks">Unlocks ${esc(f.unlocks)}.</span>` : "";
+      return `<tr class="map-${st}"><td>${esc(f.label)}${means}${mark}${unlocks}</td>
         <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
         <td class="map-note">${esc(mapNote(k))}</td></tr>`;
     }).join("");
@@ -356,8 +366,14 @@
     }${
       guesses ? `<p class="map-hint">${guesses} ${guesses > 1 ? "fields were" : "field was"} guessed from the values rather than the column name. Worth a look before you run.</p>` : ""
     }${(() => {
-      const r = Object.entries(state.refused || {});
-      return r.length ? `<p class="map-hint">This export has one row per comment, so ${r.length > 1 ? "these columns were" : "this column was"} not mapped to a case field: <strong>${r.map(([, x]) => esc(x.header)).join(", ")}</strong>. ${r.length > 1 ? "Their values change" : "Its values change"} between rows of the same case, so ${r.length > 1 ? "they hold" : "it holds"} a value per comment rather than per case. Map ${r.length > 1 ? "them" : "it"} to a comment field if that's what ${r.length > 1 ? "they are" : "it is"}.</p>` : "";
+      // Grouped by reason: the two refusals have different fixes, and one banner
+      // saying "their values change between rows" would be false of the other.
+      const all = Object.values(state.refused || {});
+      const varies = all.filter((x) => x.reason !== "shape_mismatch");
+      const shape = all.filter((x) => x.reason === "shape_mismatch");
+      const cols = (a) => `<strong>${a.map((x) => esc(x.header)).join(", ")}</strong>`;
+      return (varies.length ? `<p class="map-hint">This export has one row per comment, so ${varies.length > 1 ? "these columns were" : "this column was"} not mapped to a case field: ${cols(varies)}. ${varies.length > 1 ? "Their values change" : "Its values change"} between rows of the same case, so ${varies.length > 1 ? "they hold" : "it holds"} a value per comment rather than per case. Map ${varies.length > 1 ? "them" : "it"} to a comment field if that's what ${varies.length > 1 ? "they are" : "it is"}.</p>` : "")
+        + (shape.length ? `<p class="map-hint">${cols(shape)} partly ${shape.length > 1 ? "match the names" : "matches the name"} of a comment field, but ${shape.length > 1 ? "their values are" : "its values are"} the wrong kind for it, so ${shape.length > 1 ? "they were" : "it was"} left for a field that fits. Map ${shape.length > 1 ? "them" : "it"} by hand if the name was right.</p>` : "");
     })()}<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th><th>How</th></tr></thead><tbody>${rows}</tbody></table></div>${
       pii.length ? `<p class="pii">These columns look like personal data and are ignored unless you map them: ${pii.map(esc).join(", ")}.</p>` : ""}`;
     $("#mapping").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => {

@@ -1,183 +1,413 @@
 {
-  "_": "Header-only fixtures. Each case lists column names a file might arrive with and the mapping they must produce. Platform cases carry the vendor documentation the names were read from in source_url. Salesforce has no case: its docs could not be read, and names were not written from memory. See column_name_sources in rules.yaml.",
-  "cases": {
-    "awkward": {
-      "_": "Deliberately awkward names: punctuation, units, casing, trailing colons, dotted paths. Not any vendor's export.",
-      "headers": [
-        "Ticket ID #",
-        "CREATED (UTC)",
-        "Closed_On",
-        "ticket.status",
-        "Assigned To:",
-        "Cust. Wait (mins)"
-      ],
-      "expect": {
-        "case_id": "Ticket ID #",
-        "created_at": "CREATED (UTC)",
-        "closed_at": "Closed_On",
-        "status": "ticket.status",
-        "owner": "Assigned To:",
-        "wait_time": "Cust. Wait (mins)"
-      }
+ "_": "Header-only fixtures. Each case lists column names a file might arrive with and the mapping they must produce. Platform cases carry the vendor documentation the names were read from in source_url. Salesforce has no case: its docs could not be read, and names were not written from memory. See column_name_sources in rules.yaml.",
+ "cases": {
+  "awkward": {
+   "_": "Deliberately awkward names: punctuation, units, casing, trailing colons, dotted paths. Not any vendor's export.",
+   "headers": [
+    "Ticket ID #",
+    "CREATED (UTC)",
+    "Closed_On",
+    "ticket.status",
+    "Assigned To:",
+    "Cust. Wait (mins)"
+   ],
+   "expect": {
+    "case_id": "Ticket ID #",
+    "created_at": "CREATED (UTC)",
+    "closed_at": "Closed_On",
+    "status": "ticket.status",
+    "owner": "Assigned To:",
+    "wait_time": "Cust. Wait (mins)"
+   }
+  },
+  "camel_case": {
+   "_": "camelCase API names, which the old exact matcher missed almost entirely.",
+   "headers": [
+    "caseId",
+    "createdAt",
+    "closedAt",
+    "status",
+    "assigneeId",
+    "groupId",
+    "satisfactionRating"
+   ],
+   "expect": {
+    "case_id": "caseId",
+    "created_at": "createdAt",
+    "closed_at": "closedAt",
+    "status": "status",
+    "owner": "assigneeId",
+    "group": "groupId",
+    "csat_score": "satisfactionRating"
+   }
+  },
+  "zendesk": {
+   "_": "Field names read from the page at source_url.",
+   "source_url": "https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/",
+   "headers": [
+    "id",
+    "subject",
+    "description",
+    "status",
+    "priority",
+    "created_at",
+    "updated_at",
+    "assignee_id",
+    "group_id",
+    "organization_id",
+    "satisfaction_rating",
+    "via"
+   ],
+   "expect": {
+    "case_id": "id",
+    "subject": "subject",
+    "description": "description",
+    "status": "status",
+    "priority": "priority",
+    "created_at": "created_at",
+    "last_update_at": "updated_at",
+    "owner": "assignee_id",
+    "group": "group_id",
+    "account_id": "organization_id",
+    "csat_score": "satisfaction_rating",
+    "channel": "via"
+   }
+  },
+  "freshdesk": {
+   "_": "Field names read from the page at source_url.",
+   "source_url": "https://developers.freshdesk.com/api/",
+   "headers": [
+    "id",
+    "subject",
+    "description_text",
+    "status",
+    "priority",
+    "created_at",
+    "updated_at",
+    "responder_id",
+    "group_id",
+    "company_id",
+    "source",
+    "is_escalated"
+   ],
+   "expect": {
+    "case_id": "id",
+    "subject": "subject",
+    "description": "description_text",
+    "status": "status",
+    "priority": "priority",
+    "created_at": "created_at",
+    "last_update_at": "updated_at",
+    "owner": "responder_id",
+    "group": "group_id",
+    "account_id": "company_id",
+    "channel": "source",
+    "escalated": "is_escalated"
+   }
+  },
+  "intercom": {
+   "_": "Field names read from the page at source_url.",
+   "source_url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation",
+   "headers": [
+    "id",
+    "title",
+    "created_at",
+    "updated_at",
+    "state",
+    "priority",
+    "admin_assignee_id",
+    "team_assignee_id",
+    "conversation_rating",
+    "channel"
+   ],
+   "expect": {
+    "case_id": "id",
+    "subject": "title",
+    "created_at": "created_at",
+    "last_update_at": "updated_at",
+    "status": "state",
+    "priority": "priority",
+    "owner": "admin_assignee_id",
+    "group": "team_assignee_id",
+    "csat_score": "conversation_rating",
+    "channel": "channel"
+   }
+  },
+  "hubspot": {
+   "_": "Field names read from the page at source_url.",
+   "source_url": "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide",
+   "headers": [
+    "hs_object_id",
+    "subject",
+    "content",
+    "hs_pipeline_stage",
+    "hs_ticket_priority",
+    "hs_ticket_category"
+   ],
+   "expect": {
+    "case_id": "hs_object_id",
+    "subject": "subject",
+    "description": "content",
+    "status": "hs_pipeline_stage",
+    "priority": "hs_ticket_priority",
+    "reason": "hs_ticket_category"
+   }
+  },
+  "jira_service_management": {
+   "_": "Field names read from the page at source_url.",
+   "source_url": "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/",
+   "headers": [
+    "key",
+    "summary",
+    "description",
+    "status",
+    "created",
+    "updated",
+    "resolutiondate",
+    "assignee",
+    "priority"
+   ],
+   "expect": {
+    "case_id": "key",
+    "subject": "summary",
+    "description": "description",
+    "status": "status",
+    "created_at": "created",
+    "last_update_at": "updated",
+    "closed_at": "resolutiondate",
+    "owner": "assignee",
+    "priority": "priority"
+   }
+  },
+  "salesforce_comment_rows": {
+   "_": "A cases-with-comments report export, one row per case comment, with the case fields repeated on every row. One header is real: \"Case Comments\", reported from an export in use. Every other column name here is illustrative, written to stand in for the shape of such an export, and none of them came from Salesforce documentation, which cannot be fetched (see column_name_sources in rules.yaml). So none are added to the field synonyms or to column_name_sources, and nothing below leans on them: every mapping is reached from a column's shape and from whether it varies within a case, which needs no vendor name list.",
+   "needs_rows": "The three faults this pins down are all value-dependent: \"Case Comments\" is long free text that varies within a case, CommentCreatedDate holds dates, IsPublished holds yes/no. Matched on names alone, none of them can be told apart.",
+   "headers": [
+    "CaseNumber",
+    "CreatedDate",
+    "ClosedDate",
+    "Status",
+    "Owner.Name",
+    "Reason",
+    "Priority",
+    "Origin",
+    "Account.Name",
+    "ParentId",
+    "Case Comments",
+    "CommentCreatedDate",
+    "CommentCreatedBy",
+    "IsPublished"
+   ],
+   "rows": [
+    {
+     "CaseNumber": "00001041",
+     "CreatedDate": "2026-03-12 09:14:00",
+     "ClosedDate": "2026-03-16 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Billing",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Dental",
+     "ParentId": "00001002",
+     "Case Comments": "Customer wrote in to say the nightly export has not produced a file since the upgrade on Tuesday and they need it working before quarter end. (Case 00001041, note 1.)",
+     "CommentCreatedDate": "2026-03-12 10:00:00",
+     "CommentCreatedBy": "customer",
+     "IsPublished": "true"
     },
-    "camel_case": {
-      "_": "camelCase API names, which the old exact matcher missed almost entirely.",
-      "headers": [
-        "caseId",
-        "createdAt",
-        "closedAt",
-        "status",
-        "assigneeId",
-        "groupId",
-        "satisfactionRating"
-      ],
-      "expect": {
-        "case_id": "caseId",
-        "created_at": "createdAt",
-        "closed_at": "closedAt",
-        "status": "status",
-        "owner": "assigneeId",
-        "group": "groupId",
-        "csat_score": "satisfactionRating"
-      }
+    {
+     "CaseNumber": "00001041",
+     "CreatedDate": "2026-03-12 09:14:00",
+     "ClosedDate": "2026-03-16 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Billing",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Dental",
+     "ParentId": "00001002",
+     "Case Comments": "Thanks for coming back to us. I have passed the job logs to the platform team and asked them to look at the scheduled credential. (Case 00001041, note 2.)",
+     "CommentCreatedDate": "2026-03-12 11:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "false"
     },
-    "zendesk": {
-      "_": "Field names read from the page at source_url.",
-      "source_url": "https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/",
-      "headers": [
-        "id",
-        "subject",
-        "description",
-        "status",
-        "priority",
-        "created_at",
-        "updated_at",
-        "assignee_id",
-        "group_id",
-        "organization_id",
-        "satisfaction_rating",
-        "via"
-      ],
-      "expect": {
-        "case_id": "id",
-        "subject": "subject",
-        "description": "description",
-        "status": "status",
-        "priority": "priority",
-        "created_at": "created_at",
-        "last_update_at": "updated_at",
-        "owner": "assignee_id",
-        "group": "group_id",
-        "account_id": "organization_id",
-        "csat_score": "satisfaction_rating",
-        "channel": "via"
-      }
+    {
+     "CaseNumber": "00001041",
+     "CreatedDate": "2026-03-12 09:14:00",
+     "ClosedDate": "2026-03-16 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Billing",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Dental",
+     "ParentId": "00001002",
+     "Case Comments": "The platform team rotated a stale credential on the scheduled job. Please confirm the next overnight run produces a file as expected. (Case 00001041, note 3.)",
+     "CommentCreatedDate": "2026-03-12 12:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "true"
     },
-    "freshdesk": {
-      "_": "Field names read from the page at source_url.",
-      "source_url": "https://developers.freshdesk.com/api/",
-      "headers": [
-        "id",
-        "subject",
-        "description_text",
-        "status",
-        "priority",
-        "created_at",
-        "updated_at",
-        "responder_id",
-        "group_id",
-        "company_id",
-        "source",
-        "is_escalated"
-      ],
-      "expect": {
-        "case_id": "id",
-        "subject": "subject",
-        "description": "description_text",
-        "status": "status",
-        "priority": "priority",
-        "created_at": "created_at",
-        "last_update_at": "updated_at",
-        "owner": "responder_id",
-        "group": "group_id",
-        "account_id": "company_id",
-        "channel": "source",
-        "escalated": "is_escalated"
-      }
+    {
+     "CaseNumber": "00001042",
+     "CreatedDate": "2026-03-13 09:14:00",
+     "ClosedDate": "2026-03-17 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "J. Okafor",
+     "Reason": "Rota sync",
+     "Priority": "Medium",
+     "Origin": "Phone",
+     "Account.Name": "Larkspur Vets",
+     "ParentId": "",
+     "Case Comments": "Customer wrote in to say the nightly export has not produced a file since the upgrade on Tuesday and they need it working before quarter end. (Case 00001042, note 1.)",
+     "CommentCreatedDate": "2026-03-13 10:00:00",
+     "CommentCreatedBy": "customer",
+     "IsPublished": "true"
     },
-    "intercom": {
-      "_": "Field names read from the page at source_url.",
-      "source_url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation",
-      "headers": [
-        "id",
-        "title",
-        "created_at",
-        "updated_at",
-        "state",
-        "priority",
-        "admin_assignee_id",
-        "team_assignee_id",
-        "conversation_rating",
-        "channel"
-      ],
-      "expect": {
-        "case_id": "id",
-        "subject": "title",
-        "created_at": "created_at",
-        "last_update_at": "updated_at",
-        "status": "state",
-        "priority": "priority",
-        "owner": "admin_assignee_id",
-        "group": "team_assignee_id",
-        "csat_score": "conversation_rating",
-        "channel": "channel"
-      }
+    {
+     "CaseNumber": "00001042",
+     "CreatedDate": "2026-03-13 09:14:00",
+     "ClosedDate": "2026-03-17 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "J. Okafor",
+     "Reason": "Rota sync",
+     "Priority": "Medium",
+     "Origin": "Phone",
+     "Account.Name": "Larkspur Vets",
+     "ParentId": "",
+     "Case Comments": "Thanks for coming back to us. I have passed the job logs to the platform team and asked them to look at the scheduled credential. (Case 00001042, note 2.)",
+     "CommentCreatedDate": "2026-03-13 11:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "false"
     },
-    "hubspot": {
-      "_": "Field names read from the page at source_url.",
-      "source_url": "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide",
-      "headers": [
-        "hs_object_id",
-        "subject",
-        "content",
-        "hs_pipeline_stage",
-        "hs_ticket_priority",
-        "hs_ticket_category"
-      ],
-      "expect": {
-        "case_id": "hs_object_id",
-        "subject": "subject",
-        "description": "content",
-        "status": "hs_pipeline_stage",
-        "priority": "hs_ticket_priority",
-        "reason": "hs_ticket_category"
-      }
+    {
+     "CaseNumber": "00001042",
+     "CreatedDate": "2026-03-13 09:14:00",
+     "ClosedDate": "2026-03-17 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "J. Okafor",
+     "Reason": "Rota sync",
+     "Priority": "Medium",
+     "Origin": "Phone",
+     "Account.Name": "Larkspur Vets",
+     "ParentId": "",
+     "Case Comments": "The platform team rotated a stale credential on the scheduled job. Please confirm the next overnight run produces a file as expected. (Case 00001042, note 3.)",
+     "CommentCreatedDate": "2026-03-13 12:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "true"
     },
-    "jira_service_management": {
-      "_": "Field names read from the page at source_url.",
-      "source_url": "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/",
-      "headers": [
-        "key",
-        "summary",
-        "description",
-        "status",
-        "created",
-        "updated",
-        "resolutiondate",
-        "assignee",
-        "priority"
-      ],
-      "expect": {
-        "case_id": "key",
-        "subject": "summary",
-        "description": "description",
-        "status": "status",
-        "created_at": "created",
-        "last_update_at": "updated",
-        "closed_at": "resolutiondate",
-        "owner": "assignee",
-        "priority": "priority"
-      }
+    {
+     "CaseNumber": "00001043",
+     "CreatedDate": "2026-03-14 09:14:00",
+     "ClosedDate": "2026-03-18 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Payroll",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Clinics",
+     "ParentId": "",
+     "Case Comments": "Customer wrote in to say the nightly export has not produced a file since the upgrade on Tuesday and they need it working before quarter end. (Case 00001043, note 1.)",
+     "CommentCreatedDate": "2026-03-14 10:00:00",
+     "CommentCreatedBy": "customer",
+     "IsPublished": "true"
+    },
+    {
+     "CaseNumber": "00001043",
+     "CreatedDate": "2026-03-14 09:14:00",
+     "ClosedDate": "2026-03-18 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Payroll",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Clinics",
+     "ParentId": "",
+     "Case Comments": "Thanks for coming back to us. I have passed the job logs to the platform team and asked them to look at the scheduled credential. (Case 00001043, note 2.)",
+     "CommentCreatedDate": "2026-03-14 11:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "false"
+    },
+    {
+     "CaseNumber": "00001043",
+     "CreatedDate": "2026-03-14 09:14:00",
+     "ClosedDate": "2026-03-18 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "A. Patel",
+     "Reason": "Payroll",
+     "Priority": "High",
+     "Origin": "Email",
+     "Account.Name": "Larkspur Clinics",
+     "ParentId": "",
+     "Case Comments": "The platform team rotated a stale credential on the scheduled job. Please confirm the next overnight run produces a file as expected. (Case 00001043, note 3.)",
+     "CommentCreatedDate": "2026-03-14 12:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "true"
+    },
+    {
+     "CaseNumber": "00001044",
+     "CreatedDate": "2026-03-15 09:14:00",
+     "ClosedDate": "2026-03-19 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "S. Byrne",
+     "Reason": "Login issue",
+     "Priority": "Low",
+     "Origin": "Web",
+     "Account.Name": "Larkspur Labs",
+     "ParentId": "00001003",
+     "Case Comments": "Customer wrote in to say the nightly export has not produced a file since the upgrade on Tuesday and they need it working before quarter end. (Case 00001044, note 1.)",
+     "CommentCreatedDate": "2026-03-15 10:00:00",
+     "CommentCreatedBy": "customer",
+     "IsPublished": "true"
+    },
+    {
+     "CaseNumber": "00001044",
+     "CreatedDate": "2026-03-15 09:14:00",
+     "ClosedDate": "2026-03-19 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "S. Byrne",
+     "Reason": "Login issue",
+     "Priority": "Low",
+     "Origin": "Web",
+     "Account.Name": "Larkspur Labs",
+     "ParentId": "00001003",
+     "Case Comments": "Thanks for coming back to us. I have passed the job logs to the platform team and asked them to look at the scheduled credential. (Case 00001044, note 2.)",
+     "CommentCreatedDate": "2026-03-15 11:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "false"
+    },
+    {
+     "CaseNumber": "00001044",
+     "CreatedDate": "2026-03-15 09:14:00",
+     "ClosedDate": "2026-03-19 16:02:00",
+     "Status": "Closed",
+     "Owner.Name": "S. Byrne",
+     "Reason": "Login issue",
+     "Priority": "Low",
+     "Origin": "Web",
+     "Account.Name": "Larkspur Labs",
+     "ParentId": "00001003",
+     "Case Comments": "The platform team rotated a stale credential on the scheduled job. Please confirm the next overnight run produces a file as expected. (Case 00001044, note 3.)",
+     "CommentCreatedDate": "2026-03-15 12:00:00",
+     "CommentCreatedBy": "agent",
+     "IsPublished": "true"
     }
+   ],
+   "expect": {
+    "case_id": "CaseNumber",
+    "created_at": "CreatedDate",
+    "closed_at": "ClosedDate",
+    "status": "Status",
+    "owner": "Owner.Name",
+    "reason": "Reason",
+    "priority": "Priority",
+    "channel": "Origin",
+    "account_id": "Account.Name",
+    "follow_up_of": "ParentId",
+    "comment_body": "Case Comments",
+    "comment_at": "CommentCreatedDate",
+    "comment_author": "CommentCreatedBy",
+    "comment_public": "IsPublished"
+   }
   }
+ }
 }

@@ -151,16 +151,21 @@ test("a case file whose only ID column is conversation_id maps to case_id", () =
 // ----------------------------------------------------------- column name matching
 const HEADERS = JSON.parse(readFileSync(new URL("./fixtures/headers.json", import.meta.url))).cases;
 
+// A fixture carrying `rows` is matched with its values, because what it pins down
+// cannot be decided from the column names alone.
+const fixtureMap = (c, headers = c.headers) =>
+  mapColumns({ headers, rules, records: c.rows ?? null });
+
 for (const [name, c] of Object.entries(HEADERS)) {
   test(`headers ${name}: maps as expected`, () => {
-    assert.deepEqual(mapColumns({ headers: c.headers, rules }).map, c.expect);
+    assert.deepEqual(fixtureMap(c).map, c.expect);
   });
 }
 
 // A header can mean one thing. Two fields sharing a column would double-count it.
 test("no column is ever mapped to two fields", () => {
   for (const [name, c] of Object.entries(HEADERS)) {
-    const used = Object.values(mapColumns({ headers: c.headers, rules }).map);
+    const used = Object.values(fixtureMap(c).map);
     assert.equal(new Set(used).size, used.length, name);
   }
 });
@@ -168,8 +173,8 @@ test("no column is ever mapped to two fields", () => {
 // Scoring must not depend on the order headers happen to arrive in.
 test("matching does not depend on header order", () => {
   for (const [name, c] of Object.entries(HEADERS)) {
-    const forward = mapColumns({ headers: c.headers, rules }).map;
-    const back = mapColumns({ headers: [...c.headers].reverse(), rules }).map;
+    const forward = fixtureMap(c).map;
+    const back = fixtureMap(c, [...c.headers].reverse()).map;
     assert.deepEqual(back, forward, name);
   }
 });
@@ -905,4 +910,254 @@ test("the engine reads no files, least of all the answer key", () => {
   assert.match(src, /^\/\/ Support Signal engine/, "wrong file");
   for (const forbidden of [/larkspur_bot_truth/, /generation_stats/, /node:fs/, /readFileSync/, /\bfetch\s*\(/, /\brequire\s*\(/])
     assert.doesNotMatch(src, forbidden);
+});
+
+// --------------------------------------- a real Salesforce cases-with-comments export
+// Four faults a real export hit. Of its column names only "Case Comments" is a real
+// header; the rest are illustrative, and none came from Salesforce documentation. So
+// nothing here leans on a vendor synonym list: every mapping below is reached from the
+// column's shape and from whether it varies within a case.
+const SF = HEADERS.salesforce_comment_rows;
+const sfMap = () => mapColumns({ headers: SF.headers, rules, records: SF.rows });
+
+// 1. The comment body. "Case Comments" is long free text that differs between the rows
+// of one case, so it is not a case field whatever its name half-matches. It was refused
+// for follow_up_of by name and then handed straight back to subject by shape, which is
+// how the customer's own words went unread in an export full of them.
+test("long free text varying within a case is the comment body, not the subject", () => {
+  const { map, confidence } = sfMap();
+  assert.equal(map.comment_body, "Case Comments");
+  assert.equal(confidence.comment_body, "guess");
+  assert.equal(map.subject, undefined, "subject must not take a per-comment column");
+  assert.equal(map.description, undefined);
+  assert.equal(map.resolution_note, undefined);
+});
+
+// The same rule on both paths. Before this, the guess pass ignored it: `escalated` was
+// refused IsPublished by name and then guessed onto the very same column.
+test("a column refused for a case field by name is not guessed back onto it", () => {
+  const { map } = sfMap();
+  for (const k of Object.keys(rules.fields)) {
+    if (k === "case_id" || (rules.fields[k].level || "case") === "comment") continue;
+    assert.notEqual(map[k], "Case Comments", `${k} took a per-comment column`);
+    assert.notEqual(map[k], "IsPublished", `${k} took a per-comment column`);
+    assert.notEqual(map[k], "CommentCreatedDate", `${k} took a per-comment column`);
+  }
+});
+
+// A refusal and a mapping for one field contradict each other, and the mapping table
+// prints both. Whichever is true, the pair cannot be.
+test("no field is reported as refused and mapped at once", () => {
+  const { map, refused } = sfMap();
+  for (const k of Object.keys(refused)) assert.equal(map[k], undefined, `${k} is both`);
+});
+
+// And the other half: a refusal names a column, and the banner built from it tells the
+// reader to go and map that column. Once something else has taken it, that is stale
+// advice about a column already in use, so the refusal has to clear.
+test("a refusal clears once its column is mapped elsewhere", () => {
+  const { map, refused } = sfMap();
+  const used = new Set(Object.values(map));
+  for (const [k, r] of Object.entries(refused))
+    assert.ok(!used.has(r.header), `${k} still refuses ${r.header}, which is mapped`);
+  // IsPublished was turned down for the escalated flag and then read as comment_public.
+  assert.equal(map.comment_public, "IsPublished");
+  assert.equal(refused.escalated, undefined, "stale refusal for a mapped column");
+});
+
+// 2. Shape gates a loose name match. "CommentCreatedDate" overlaps comment_id's own
+// name by a word, scoring a partial match, and a column of dates became the comment ID
+// while the comment timestamp went unmapped.
+test("a date column does not become the comment ID", () => {
+  const { map } = sfMap();
+  assert.equal(map.comment_at, "CommentCreatedDate", "the timestamp field gets it");
+  assert.equal(map.comment_id, undefined, "the ID field does not");
+});
+
+// The refusal itself, where the column really is left with nowhere to go: comment_at
+// is already taken by name, and every other date field is case-level, so nothing can
+// pick this column up. A gap with a reason must not look like a plain gap.
+test("a refused column is reported when nothing else can take it", () => {
+  const headers = ["case_id", "comment_created_at", "Comment Identifier"];
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    case_id: `0000${1000 + (i % 4)}`,
+    comment_created_at: `2026-03-1${i % 4} 1${i % 3}:00:00`,
+    "Comment Identifier": `2026-04-0${(i % 3) + 1} 09:00:00`,
+  }));
+  const { map, refused } = mapColumns({ headers, rules, records: rows });
+  assert.equal(map.comment_at, "comment_created_at");
+  assert.equal(map.comment_id, undefined);
+  assert.equal(refused.comment_id?.header, "Comment Identifier");
+  assert.equal(refused.comment_id?.reason, "shape_mismatch");
+});
+
+test("a yes/no column does not become the comment body", () => {
+  const headers = ["case_id", "comment_created_at", "Has Comment Body"];
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    case_id: `0000${1000 + (i % 4)}`,
+    comment_created_at: `2026-03-1${i % 4} 1${i % 3}:00:00`,
+    "Has Comment Body": i % 3 === 1 ? "false" : "true",
+  }));
+  assert.equal(mapColumns({ headers, rules, records: rows }).map.comment_body, undefined,
+    "a yes/no column is not the comment body");
+});
+
+// The gate is for loose matches only. A column named exactly as the field is taken on
+// its name: the owner of the export gets to say what their column is.
+test("an exact name match is trusted even where the values look wrong", () => {
+  const headers = ["case_id", "comment body"];
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    case_id: `0000${1000 + (i % 4)}`, "comment body": i % 3 === 1 ? "false" : "true",
+  }));
+  assert.equal(mapColumns({ headers, rules, records: rows }).map.comment_body, "comment body");
+});
+
+// --------------------------------------------------------------- 3. no empty passes
+// A column that is present and holds nothing. Every check that read its values to
+// judge something else passed on it: B3 was green off "0 distinct reasons", and AI2
+// printed "Reasons describe customer needs" about a column with no reasons in it.
+function emptyReason() {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const blanked = records.map((r) => ({ ...r, reason: "" }));
+  const mapping = autoMap(headers, rules);
+  assert.equal(mapping.reason, "reason", "the column is still mapped");
+  return runAudit({ records: blanked, mapping, headers, rules });
+}
+
+for (const id of ["B3", "AI2", "AI3", "AI5"]) {
+  test(`${id} cannot be judged when the reason column is mapped and empty`, () => {
+    const c = emptyReason().checks[id];
+    assert.equal(c.outcome, "needs_human", c.detail);
+    assert.equal(c.empty_field, "reason");
+    assert.match(c.detail, /every value is blank/);
+  });
+}
+
+// B2 and B1 measure emptiness, so they keep their verdicts: 100% blank is B2's answer,
+// not a reason it can't answer. Turning these into "can't tell" would hide the fault.
+test("the checks that measure emptiness still report it", () => {
+  const r = emptyReason();
+  assert.equal(r.checks.B2.outcome, "fail");
+  assert.match(r.checks.B2.detail, /100% of cases sit in blank or catch-all reasons/);
+  assert.equal(r.checks.B1.outcome, "fail");
+});
+
+test("signals grouped by reason lock rather than report a finding", () => {
+  const r = emptyReason();
+  for (const id of ["theme_movers", "self_help", "keep_human"]) {
+    const s = r.signals.find((x) => x.id === id);
+    assert.equal(s.state, "locked", id);
+    assert.match(s.reason, /every value in it is blank/, id);
+    assert.equal(s.headline, undefined, `${id} must not report a headline`);
+  }
+});
+
+// "Stable" and "0 candidate reasons" both read as findings. They were the absence of
+// anything to find, which is a different thing and has to say so.
+test("theme movers does not call an empty reason column stable", () => {
+  const s = emptyReason().signals.find((x) => x.id === "theme_movers");
+  assert.notEqual(s.headline, "Stable");
+});
+
+test("the AI readiness verdict says the text is there and the reason is empty", () => {
+  const u = emptyReason().uses.find((x) => x.id === "ai");
+  assert.deepEqual(u.empty_fields, ["reason"]);
+  assert.match(u.empty_note, /contact reason/, "names the empty field");
+  assert.match(u.empty_note, /no values in it/);
+  assert.match(u.empty_note, /subject|description/, "says the wording is there");
+  assert.notEqual(u.outcome, "pass");
+});
+
+// A use whose fields all hold values says nothing, or the note becomes wallpaper.
+test("a use with nothing empty carries no empty note", () => {
+  const { report } = audit("history");
+  for (const u of report.uses) assert.equal(u.empty_note, undefined, u.id);
+});
+
+// ------------------------------------------- 4. what an optional column is, and buys
+// An optional field is a choice, and the label alone does not say enough to make it.
+test("every optional field says what it is and what it unlocks", () => {
+  const optional = Object.entries(rules.fields)
+    .filter(([, f]) => !f.required && (f.file || "case") !== "bot");
+  assert.ok(optional.length >= 25, `${optional.length} optional fields`);
+  for (const [k, f] of optional) {
+    assert.ok(f.means, `${k} has no means`);
+    assert.ok(f.unlocks, `${k} has no unlocks`);
+    // A sentence, not a word, and not an essay in a table cell.
+    assert.ok(f.means.length >= 8 && f.means.length <= 80, `${k} means: ${f.means}`);
+    assert.ok(f.unlocks.length >= 12 && f.unlocks.length <= 160, `${k} unlocks: ${f.unlocks}`);
+    // Both render mid-sentence: `means` inside the label's brackets, `unlocks` after
+    // "Unlocks". A trailing full stop would double up against the one the page adds.
+    assert.ok(!/[.]$/.test(f.means), `${k} means ends in a full stop`);
+    assert.ok(!/[.]$/.test(f.unlocks), `${k} unlocks ends in a full stop`);
+  }
+});
+
+test("the follow-up field says it wants the ID of the original case", () => {
+  assert.equal(rules.fields.follow_up_of.label, "Follow-up of");
+  assert.equal(rules.fields.follow_up_of.means, "ID of the original case");
+});
+
+// The title shown next to an empty column, in the check list and in the blocker list
+// on the use. Both the pass and the failure title are claims about the values, so on a
+// column with none they are each false: the blocker line read "Reasons describe teams,
+// not customers" about an export with no reasons in it at all.
+test("an empty column is not given a title that claims something about its values", () => {
+  const r = emptyReason();
+  for (const id of ["B3", "AI2", "AI3", "AI5"]) {
+    const def = rules.checks.find((c) => c.id === id);
+    assert.ok(def.empty_title, `${id} has no empty_title`);
+    assert.equal(r.checks[id].title, def.empty_title, id);
+    assert.notEqual(r.checks[id].title, def.title, `${id} claims the pass case`);
+    assert.notEqual(r.checks[id].title, def.failure_title, `${id} claims the failure case`);
+  }
+});
+
+// ------------------------------------------------- guessing a visibility polarity
+// comment_public and comment_private are the same shape and opposite meanings, so a
+// column of yes/no values fits both and the winner was whichever was declared first.
+// Read the wrong way round it inverts every "latest public comment" in silence, which
+// is the single mistake the pair of fields exists to prevent.
+test("a polarity field is guessed only onto a header that carries the polarity", () => {
+  const rows = (name) => Array.from({ length: 12 }, (_, i) => ({
+    case_id: `0000${1000 + (i % 4)}`,
+    comment_created_at: `2026-03-1${i % 4} 1${i % 3}:00:00`,
+    [name]: i % 3 === 1 ? "false" : "true",
+  }));
+  const mapOf = (name) => mapColumns({ headers: ["case_id", "comment_created_at", name], rules, records: rows(name) }).map;
+
+  // Says which polarity it is, so the guess is safe to make.
+  assert.equal(mapOf("IsPublished").comment_public, "IsPublished");
+  assert.equal(mapOf("Visible To Customer").comment_public, "Visible To Customer");
+  assert.equal(mapOf("Internal Only").comment_private, "Internal Only");
+
+  // Says nothing. A visible gap beats a coin toss that silently inverts the answer.
+  for (const name of ["Flag 2", "Comment Attribute", "Custom Checkbox"]) {
+    const m = mapOf(name);
+    assert.equal(m.comment_public, undefined, `${name} guessed as public`);
+    assert.equal(m.comment_private, undefined, `${name} guessed as private`);
+  }
+});
+
+// The guard is on guessing only. A header that names the field is taken on its name.
+test("a polarity field still matches a header that names it", () => {
+  const headers = ["case_id", "comment_created_at", "comment public"];
+  const rows = Array.from({ length: 12 }, (_, i) => ({
+    case_id: `0000${1000 + (i % 4)}`,
+    comment_created_at: `2026-03-1${i % 4} 1${i % 3}:00:00`,
+    "comment public": i % 3 === 1 ? "false" : "true",
+  }));
+  const { map, confidence } = mapColumns({ headers, rules, records: rows });
+  assert.equal(map.comment_public, "comment public");
+  assert.equal(confidence.comment_public, "name");
+});
+
+// Only the two polarity fields carry the guard, or it becomes a general brake on
+// inference: the demo's opaque-column test relies on a guess with no word to go on.
+test("the polarity guard is declared, and only where polarity is the risk", () => {
+  const guarded = Object.entries(rules.fields).filter(([, f]) => f.guess_requires_word).map(([k]) => k);
+  assert.deepEqual(guarded.sort(), ["comment_private", "comment_public"]);
+  for (const k of guarded)
+    for (const w of rules.fields[k].guess_requires_word)
+      assert.match(w, /^[a-z]+$/, `${k}: ${w} must be one lowercase word`);
 });

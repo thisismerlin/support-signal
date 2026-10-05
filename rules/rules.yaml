@@ -38,32 +38,76 @@ fields:
   created_at:      { label: Created, shape: date, required: true, synonyms: [created, created at, created date, opened, date opened, createddate] }
   closed_at:       { label: Closed, shape: date, required: true, synonyms: [closed, closed at, closed date, solved at, resolved at, date closed, closeddate, resolution date, resolutiondate] }
   status:          { label: Status, shape: category, required: true, synonyms: [status, state, hs pipeline stage] }
-  owner:           { label: Owner, shape: category, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid, assignee id, responder id, admin assignee id] }
-  group:           { label: Group or queue, shape: category, synonyms: [group, queue, team, department, group id, team assignee id] }
-  reason:          { label: Contact reason, shape: category, synonyms: [reason, category, case reason, contact reason, disposition, type, topic, hs ticket category] }
-  subject:         { label: Subject, shape: text, synonyms: [subject, title, summary] }
-  description:     { label: Description, shape: text, synonyms: [description, body, first message, details, description text, content] }
+  owner:           { label: Owner, shape: category, synonyms: [owner, assignee, agent, case owner, assigned to, ownerid, assignee id, responder id, admin assignee id],
+    means: "who the case is assigned to",
+    unlocks: "the routing-quality check B1, and the per-owner signals once history or an owner count is present" }
+  group:           { label: Group or queue, shape: category, synonyms: [group, queue, team, department, group id, team assignee id],
+    means: "the team or queue holding the case",
+    unlocks: "routing quality B1, the escalation cross-check B7, and the by-group breakdown in the slow-cases and open-work signals" }
+  reason:          { label: Contact reason, shape: category, synonyms: [reason, category, case reason, contact reason, disposition, type, topic, hs ticket category],
+    means: "why the customer got in touch",
+    unlocks: "every theme question: catch-all share B2, near-duplicate reasons B3, team-type reasons AI2, theme movers, self-help and keep-a-human" }
+  subject:         { label: Subject, shape: text, synonyms: [subject, title, summary],
+    means: "the case's one-line summary",
+    unlocks: "usable customer wording AI1, and the billing churn driver" }
+  description:     { label: Description, shape: text, synonyms: [description, body, first message, details, description text, content],
+    means: "the customer's first message",
+    unlocks: "usable customer wording AI1" }
   # `file: both`: the bot export carries account, account size and product columns
   # with the same meaning as the case export's, so they are reused rather than
   # duplicated as bot_* fields. B11 reads account_id off the bot file to tell its
   # warn case (account plus timings) from not_in_export.
-  account_id:      { label: Account, shape: id, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid, organization id, company id] }
-  account_size:    { label: Account size, shape: category, file: both, synonyms: [account size, size, tier, plan, seats band, segment size] }
-  segment:         { label: Product or segment, shape: category, file: both, synonyms: [product, segment, product line, region] }
-  channel:         { label: Channel, shape: category, synonyms: [channel, origin, via, source] }
-  priority:        { label: Priority, shape: category, synonyms: [priority, severity, hs ticket priority] }
-  reopen_count:    { label: Reopens, shape: number, synonyms: [reopens, reopen count, times reopened] }
-  follow_up_of:    { label: Follow-up of, shape: id, synonyms: [follow up of, follow-up of, parent case, related case] }
-  escalated:       { label: Escalated flag, shape: flag, synonyms: [escalated, is escalated, isescalated, fr escalated] }
-  owner_changes:   { label: Owners count, shape: number, synonyms: [owner changes, assignee stations, assignees, owner count] }
-  group_changes:   { label: Groups count, shape: number, synonyms: [group changes, group stations, groups, queue changes] }
-  wait_time:       { label: Customer wait time, shape: number, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes] }
-  resolution_note: { label: Resolution note, shape: text, synonyms: [resolution, resolution note, solution, resolution notes, close notes] }
-  linked_article:  { label: Linked article, shape: id, synonyms: [article, linked article, kb article, macro, knowledge article] }
-  last_update_at:  { label: Last update, shape: date, synonyms: [last update, last updated, last public update, updated at, last modified, updated] }
-  csat_score:      { label: CSAT score, shape: number, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating] }
-  churned:         { label: Churned, shape: flag, synonyms: [churned, churn, cancelled, lost] }
-  exit_event:      { label: Exit event, shape: category, synonyms: [exit event, cancellation, deregistration] }
+  account_id:      { label: Account, shape: id, file: both, synonyms: [account, account id, organization, organisation, company, customer id, accountid, organization id, company id],
+    means: "which customer the case belongs to",
+    unlocks: "account linkage B9, and every churn driver, none of which can run without cases grouped by account" }
+  account_size:    { label: Account size, shape: category, file: both, synonyms: [account size, size, tier, plan, seats band, segment size],
+    means: "the account's size, plan or tier band",
+    unlocks: "stratification B10, so case volume can be told apart from a real churn driver" }
+  segment:         { label: Product or segment, shape: category, file: both, synonyms: [product, segment, product line, region],
+    means: "the product line or region",
+    unlocks: "stratification B10, and it is preferred over account size as the churn control" }
+  channel:         { label: Channel, shape: category, synonyms: [channel, origin, via, source],
+    means: "how the case arrived",
+    unlocks: "the email and chat volume estimate AI6, and the phone-contact churn driver" }
+  priority:        { label: Priority, shape: category, synonyms: [priority, severity, hs ticket priority],
+    means: "the case's priority or severity",
+    unlocks: "the high-priority churn driver" }
+  reopen_count:    { label: Reopens, shape: number, synonyms: [reopens, reopen count, times reopened],
+    means: "how many times the case was reopened",
+    unlocks: "reopen history C2 and B6, and the reopened-case churn driver" }
+  follow_up_of:    { label: Follow-up of, shape: id, synonyms: [follow up of, follow-up of, parent case, related case],
+    means: "ID of the original case",
+    unlocks: "repeat contact after closure B6, which reopen counts on their own miss" }
+  escalated:       { label: Escalated flag, shape: flag, synonyms: [escalated, is escalated, isescalated, fr escalated],
+    means: "whether the case was escalated",
+    unlocks: "the escalation-flag check B7, which holds the flag up against what history shows" }
+  owner_changes:   { label: Owners count, shape: number, synonyms: [owner changes, assignee stations, assignees, owner count],
+    means: "how many owners the case passed through",
+    unlocks: "counts-only history C2, and the handoff and slow-and-passed-around signals where there is no change log" }
+  group_changes:   { label: Groups count, shape: number, synonyms: [group changes, group stations, groups, queue changes],
+    means: "how many teams or queues the case passed through",
+    unlocks: "counts-only history C2" }
+  wait_time:       { label: Customer wait time, shape: number, synonyms: [requester wait minutes, requester wait time, on hold time, pending time, wait time, wait minutes],
+    means: "time the case spent waiting on the customer",
+    unlocks: "the resolution-time caveat B5, which says whether slow really means slow" }
+  resolution_note: { label: Resolution note, shape: text, synonyms: [resolution, resolution note, solution, resolution notes, close notes],
+    means: "how the case was solved",
+    unlocks: "the solution-record check AI4, and the documented share on self-help candidates" }
+  linked_article:  { label: Linked article, shape: id, synonyms: [article, linked article, kb article, macro, knowledge article],
+    means: "the knowledge article or macro used",
+    unlocks: "the solution-record check AI4" }
+  last_update_at:  { label: Last update, shape: date, synonyms: [last update, last updated, last public update, updated at, last modified, updated],
+    means: "when the case last changed",
+    unlocks: "the open-work-at-risk signal; derived from the latest public comment when no column carries it" }
+  csat_score:      { label: CSAT score, shape: number, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating],
+    means: "the survey score the customer gave",
+    unlocks: "survey coverage B8, the CSAT column on the handoff signal, and the low-CSAT churn driver" }
+  churned:         { label: Churned, shape: flag, synonyms: [churned, churn, cancelled, lost],
+    means: "whether the account later left",
+    unlocks: "every churn driver; without an outcome column no case pattern can be tested against one" }
+  exit_event:      { label: Exit event, shape: category, synonyms: [exit event, cancellation, deregistration],
+    means: "a cancellation or similar event logged on the case",
+    unlocks: "the exit-events signal, for whoever owns retention" }
 
   # Comment-level fields, for an export with one row per case comment or email.
   # `level: comment` marks a column whose value belongs to the row, not the case:
@@ -74,18 +118,38 @@ fields:
   # already claimed by description and created_at in case scope, and a joined export
   # is exactly where that header is ambiguous, so the collapser reports the clash as
   # a conflict naming the field and the mapping table lets it be moved by hand.
-  comment_id:          { label: Comment ID, shape: id, level: comment, synonyms: [comment id, note id, conversation part id, comment number, reply id] }
-  comment_body:        { label: Comment body, shape: text, level: comment, synonyms: [comment body, comment body text, comment text, comment plain body, comment html body, note body, note body text, hs note body, public comment body, reply body] }
-  comment_at:          { label: Comment time, shape: date, level: comment, synonyms: [comment at, comment created at, comment created, comment time, comment date, note created at, note at, hs timestamp, reply created at, conversation part created at] }
-  comment_author:      { label: Comment author, shape: category, level: comment, synonyms: [comment author, comment author id, comment user id, note author, note user id, hubspot owner id, comment created by, reply author] }
-  comment_author_type: { label: Comment author type, shape: category, level: comment, synonyms: [comment author type, author type, comment author kind, note author type, commenter type] }
+  comment_id:          { label: Comment ID, shape: id, level: comment, synonyms: [comment id, note id, conversation part id, comment number, reply id],
+    means: "the comment's own identifier",
+    unlocks: "an exact comment count: without one, two short replies sent in the same minute look like one row sent twice, so the counts are a floor" }
+  comment_body:        { label: Comment body, shape: text, level: comment, synonyms: [comment body, comment body text, comment text, comment plain body, comment html body, note body, note body text, hs note body, public comment body, reply body],
+    means: "the comment's text",
+    unlocks: "customer wording from the comments AI1, and the billing churn driver, in exports where the subject and description are empty" }
+  comment_at:          { label: Comment time, shape: date, level: comment, synonyms: [comment at, comment created at, comment created, comment time, comment date, note created at, note at, hs timestamp, reply created at, conversation part created at],
+    means: "when the comment was posted",
+    unlocks: "comment ordering, and the last-update derivation when no case column carries it" }
+  comment_author:      { label: Comment author, shape: category, level: comment, synonyms: [comment author, comment author id, comment user id, note author, note user id, hubspot owner id, comment created by, reply author],
+    means: "who wrote the comment",
+    unlocks: "nothing yet: it is read and kept with each comment, but no check reads it" }
+  comment_author_type: { label: Comment author type, shape: category, level: comment, synonyms: [comment author type, author type, comment author kind, note author type, commenter type],
+    means: "whether an agent or the customer wrote it",
+    unlocks: "nothing yet: it is read and kept with each comment, but no check reads it" }
   # Public and internal are one question with two spellings of opposite polarity:
   # Zendesk and Jira Service Management publish `public` (true means public),
   # Freshdesk publishes `private` (true means internal). One field would read
   # `private: true` as public and quietly invert every "latest public comment", so
   # each polarity gets its own field and the engine folds them to one answer.
-  comment_public:      { label: Comment is public, shape: flag, level: comment, synonyms: [comment public, comment is public, is public comment, public comment, comment visible to customer, jsd public] }
-  comment_private:     { label: Comment is internal, shape: flag, level: comment, synonyms: [comment private, comment is private, comment internal, comment is internal, internal note, private note, note private, is internal comment] }
+  # Guessing either of these from values alone is the one mistake they exist to stop.
+  # Two flag columns are identical in their values, so shape cannot tell public from
+  # private, and getting it backwards inverts every "latest public comment" in silence.
+  # A guess therefore needs the header to carry the polarity; a name match already does.
+  comment_public:      { label: Comment is public, shape: flag, level: comment, synonyms: [comment public, comment is public, is public comment, public comment, comment visible to customer, jsd public],
+    guess_requires_word: [public, published, visible, external],
+    means: "whether the customer could see the comment, true meaning public",
+    unlocks: "a last update taken from the latest public comment rather than from an internal note" }
+  comment_private:     { label: Comment is internal, shape: flag, level: comment, synonyms: [comment private, comment is private, comment internal, comment is internal, internal note, private note, note private, is internal comment],
+    guess_requires_word: [private, internal, hidden],
+    means: "whether the comment is an internal note, true meaning internal",
+    unlocks: "the same question as comment is public, read the other way round" }
 
   # Bot conversation fields, for the resolution audit. Matched only against a bot
   # export, so these synonyms are free to repeat ones used by the case fields
@@ -217,6 +281,7 @@ checks:
     reads_fields: [reason]
     title: Reason codes are a tidy set
     failure_title: Reason codes have sprawled
+    empty_title: Reason codes can't be judged
     metric: Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times
     why: Duplicates like "SSO" and "Single sign-on" split one issue in two and make trends meaningless.
     fix: Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.
@@ -325,6 +390,7 @@ checks:
     reads_fields: [reason]
     title: Reasons describe customer needs
     failure_title: Reasons describe teams, not customers
+    empty_title: Reason wording can't be judged
     metric: Share of volume whose reason names a team, tier or process ("Tier 2", "Escalated")
     threshold: { dir: lower, pass: 0.1, warn: 0.3, provisional: true }
     why: A reason like "Tier 2" tells a bot nothing about what the customer wanted. AI intents must describe the customer's need.
@@ -337,6 +403,7 @@ checks:
     reads_fields: [reason]
     title: Reasons don't overlap
     failure_title: Reasons overlap
+    empty_title: Reason overlap can't be judged
     metric: Reviewed by a person in this version; the report lists near-duplicate reasons to start from
     why: Zendesk warns that overlapping intents cause "low-confidence or wrong topic detection".
     fix: Merge or redefine overlapping reasons so each covers one need.
@@ -360,6 +427,7 @@ checks:
     reads_fields: [reason]
     title: Demand is concentrated enough to automate
     failure_title: Demand is too scattered to automate easily
+    empty_title: Demand spread can't be judged
     metric: Share of cases with a real reason that fall in the ten most common reasons
     threshold: { dir: higher, pass: 0.5, warn: 0.3, provisional: true }
     why: Automation pays back fastest on frequent, repeated questions.
@@ -445,6 +513,11 @@ signals:
   - id: theme_movers
     title: Theme movers
     unlocked_by_any_check: [AI1, B2]
+    # Grouped by reason, so a reason column with nothing in it leaves nothing to
+    # compare. Unlocked by AI1, which a comment export can pass on its comment text
+    # alone, so an empty reason column has to be checked separately or this reports
+    # "Stable" off two empty quarters.
+    requires_values: [reason]
     shows: Reasons rising or falling in the last quarter against the previous nine months
     disclaimer: Shows what is moving, not why.
   - id: open_risk
@@ -461,11 +534,13 @@ signals:
   - id: self_help
     title: AI self-help candidates
     unlocked_by_uses: [ai]
+    requires_values: [reason]
     shows: Reasons that are frequent, quick, single-owner and documented
     disclaimer: A shortlist to test, not a deflection forecast.
   - id: keep_human
     title: Keep-a-human themes
     unlocked_by_uses: [ai, transfers]
+    requires_values: [reason]
     shows: Reasons with long resolution times or many owners
     disclaimer: Where automation is most likely to frustrate customers.
 
