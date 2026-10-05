@@ -90,6 +90,8 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 .seg button[aria-pressed="true"] { background: var(--thumb); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14), 0 0 0 0.5px rgba(0, 0, 0, 0.06); font-weight: 600; }
 .seg button:hover:not([aria-pressed="true"]) { background: color-mix(in srgb, var(--ink) 6%, transparent); }
 .privacy { font-size: 0.8125rem; color: var(--muted); letter-spacing: -0.005em; }
+/* Beside the copy button, where the report is actually put somewhere else. */
+.copy-note { font-size: 0.8125rem; color: var(--muted); letter-spacing: -0.005em; max-width: 64ch; margin-top: -8px; }
 
 /* ---------- verdict marks: shape carries the state, colour repeats it ---------- */
 .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 0.875rem/1.2 var(--f-body); letter-spacing: -0.01em; white-space: nowrap; }
@@ -411,7 +413,7 @@ footer p { max-width: 86ch; }
         <button type="button" data-src="demo-history" aria-pressed="false">Export with history</button>
         <button type="button" data-src="upload" aria-pressed="false">Your own export</button>
       </div>
-      <p class="privacy">Runs in your browser. Nothing is uploaded, stored or sent anywhere, and the report quotes nothing back from your file but short category labels.</p>
+      <p class="privacy">Runs in your browser. Nothing is uploaded, stored or sent anywhere. The report quotes only short labels from the columns you map as contact reason and group, so check those before sharing it.</p>
     </div>
   </header>
 
@@ -474,6 +476,7 @@ footer p { max-width: 86ch; }
 
     <footer>
       <div class="row"><button type="button" class="btn btn-ghost" id="copy-report">Copy report as JSON</button><span id="copy-status" aria-live="polite"></span></div>
+      <p class="copy-note">The report quotes only short labels from the columns you map as contact reason and group, so check those before sharing it.</p>
       <textarea id="report-json" hidden readonly aria-label="Report JSON"></textarea>
       <p>The demo company, Larkspur, is made up. Its data is fictional, deliberately messy and generated with a fixed seed. Thresholds are provisional.</p>
       <p id="stamp"></p>

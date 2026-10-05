@@ -1594,3 +1594,42 @@ test("the free-text thresholds are declared and marked provisional", () => {
   // 468 distinct over 543 cases is 0.86 unique: comfortably past the line, as it should be.
   assert.ok(468 / 543 > ft.max_unique_share, "the reported case must trip the share test");
 });
+
+// The page and the README both promise that the report quotes only short labels from
+// the columns mapped as contact reason and group. That is a promise about this code,
+// so it is held here: add a quote site for any other field and this fails, before the
+// promise quietly becomes false.
+test("only contact reason and group are ever quoted back", () => {
+  const cases = load("larkspur_with_history.csv");
+  const history = load("larkspur_history_log.csv").records;
+  // Two fields are left alone because overwriting them breaks the run rather than
+  // testing it: status decides whether a case reads as closed, and marking it locks
+  // the group signals; case_id is the key the cases are grouped by, and marking it
+  // collapses 5,083 cases into six. Either way nothing is quoted and the test passes
+  // while proving nothing, which is the failure mode this assertion exists to avoid.
+  const SKIP = new Set(["status", "case_id"]);
+  const FIELDS = Object.entries(rules.fields)
+    .filter(([k, f]) => (f.file || "case") !== "bot" && ["category", "id"].includes(f.shape) && !SKIP.has(k))
+    .map(([k]) => k);
+  const mark = (f, i) => `MK-${f.toUpperCase()}-${i % 6}`;
+  const rows = cases.records.map((r, i) => {
+    const o = { ...r };
+    for (const f of FIELDS) if (f in o) o[f] = mark(f, i);
+    return o;
+  });
+  const bot = load("larkspur_bot_with_history.csv");
+  const report = runAudit({
+    records: rows, mapping: autoMap(cases.headers, rules), headers: cases.headers, rules, history,
+    bot: { records: bot.records, headers: bot.headers,
+      mapping: mapColumns({ headers: bot.headers, rules, scope: "bot", records: bot.records }).map },
+  });
+  const blob = JSON.stringify(report);
+  const quoted = FIELDS.filter((f) => blob.includes(`MK-${f.toUpperCase()}-`));
+  assert.deepEqual(quoted.sort(), ["group", "reason"],
+    "the promise in the page and the README names reason and group only");
+
+  // And the promise is not vacuous: both really are quoted here, so a change that
+  // stopped quoting them would show up as a wording problem rather than pass silently.
+  const signals = report.signals.filter((s) => (s.rows || []).length);
+  assert.ok(signals.length >= 2, "no signal tabled anything, so this proves nothing");
+});
