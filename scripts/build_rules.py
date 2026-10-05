@@ -13,6 +13,9 @@ for s in r["signals"]:
     errs += [f"signal {s['id']} -> {x}" for x in s.get("unlocked_by_any_check", []) if x not in ids]
 # Field scopes: a typo here would silently stop a column mapping rather than fail.
 SCOPES = {"case", "bot", "both"}
+# `reads:` tags declared in engine code rather than in rules.yaml: the churn driver
+# flags are defined there, so a tag they use need not appear on a check or signal.
+ENGINE_READS = {"comment_text", "comment_count"}
 errs += [f"field {k} file: {f['file']}" for k, f in r["fields"].items()
          if f.get("file", "case") not in SCOPES]
 errs += [f"use {u['id']} needs_file: {u['needs_file']}" for u in r["uses"]
@@ -52,6 +55,20 @@ errs += [f"comment_column_sources {v} -> {k}" for v, k in r.get("comment_column_
 # a citation for something that isn't there.
 if r.get("comment_column_sources") and not any(f.get("level") == "comment" for f in r["fields"].values()):
     errs.append("comment_column_sources is set but no field is level: comment")
+# Cautions attach by `reads:` tag, so a tag nothing declares, or a declared tag no
+# caution covers, is a caution that will never fire or a reader that will never hear.
+cautions = r.get("cautions", {})
+covered = {t for c in cautions.values() for t in c.get("applies_to_reads", [])}
+declared = set()
+for group in ("checks", "signals"):
+    for item in r.get(group, []):
+        declared |= set(item.get("reads", []))
+errs += [f"caution tag {t!r} is declared by no check or signal" for t in sorted(covered - declared)
+         if t not in ENGINE_READS]
+errs += [f"reads tag {t!r} on a check or signal matches no caution" for t in sorted(declared - covered)]
+for name, c in cautions.items():
+    errs += [f"caution {name} has no {k}" for k in ("applies_to_reads", "title", "text") if not c.get(k)]
+
 # The engine reads these by name; a rename here must not fail silently at runtime.
 params = r.get("resolution_audit", {}).get("params", {})
 errs += [f"resolution_audit.params missing {p}" for p in

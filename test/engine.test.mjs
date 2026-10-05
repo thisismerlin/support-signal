@@ -416,18 +416,29 @@ test("the file's shape is reported as one row per comment, not as a failure", ()
   assert.equal(report.load.multi_row_cases > 0, true);
   assert.deepEqual(report.load.comments_per_case, s.comments_per_case);
   assert.deepEqual(report.load.conflicts, [], "the case fields are repeated, so nothing conflicts");
-  // C4 still reports, and still on duplicates only: the shape is not a duplicate.
-  assert.equal(report.checks.C4.outcome, expected.snapshot.checks.C4);
+  assert.equal(report.load.conflict_cases, 0);
+  // C4 judges the cases, and they collapse cleanly, so the shape passes it. The
+  // identical rows are still counted and still said, just not held against the cases.
+  assert.equal(report.checks.C4.outcome, "pass");
+  assert.equal(report.checks.C4.conflict_cases, 0);
   assert.equal(report.checks.C4.duplicate_rows, s.exact_duplicate_rows);
   assert.match(report.checks.C4.detail, /one row per comment/);
+  assert.match(report.checks.C4.detail, /collapse is clean/);
+  assert.match(report.checks.C4.detail, /don't count here/);
 });
 
 test("collapsing gives the same verdicts as the ordinary export", () => {
   const { report } = commentRows();
   const want = expected.comments;
-  // Pinned against the snapshot's own expectations, so the two can never drift.
-  assert.deepEqual(want.checks, expected.snapshot.checks, "the comment file must expect the snapshot's verdicts");
-  for (const [id, outcome] of Object.entries(want.checks))
+  // Pinned against the snapshot's own expectations, so the two can never drift, bar
+  // the exceptions named in expected.json. C4 is one: the snapshot's repeated case
+  // rows are a duplicate there and the file's shape here, which is the whole point.
+  const differ = expected.comments_differ_from_snapshot;
+  assert.deepEqual({ ...want.checks, ...differ }, { ...expected.snapshot.checks, ...differ },
+    "the comment file must expect the snapshot's verdicts apart from the named exceptions");
+  for (const [id, outcome] of Object.entries(differ))
+    assert.notEqual(outcome, expected.snapshot.checks[id], `${id} is listed as differing but matches the snapshot`);
+  for (const [id, outcome] of Object.entries({ ...want.checks, ...differ }))
     assert.equal(report.checks[id].outcome, outcome, `${id}: ${report.checks[id].detail}`);
   for (const [id, outcome] of Object.entries(expected.snapshot.uses))
     assert.equal(report.uses.find((u) => u.id === id).outcome, outcome, `use ${id}`);
@@ -503,19 +514,105 @@ test("a comment body with no subject or description still counts as usable wordi
   assert.match(report.checks.AI1.detail, /1 of them only in the comment text/);
 });
 
-// Duplicates inside a one-to-many export. The shape must not excuse a repeated row.
-test("a repeated comment row is still a duplicate in a one-row-per-comment export", () => {
+// Duplicates inside a one-to-many export. They are dropped and said out loud, but
+// they are a thinned comment log, not a case counted twice, so C4 is not where they
+// land: 529 identical rows of 15,689 still collapse to the same 5,083 clean cases.
+test("a repeated comment row is dropped and reported, and does not fail C4", () => {
   const { headers, records } = load(FILES.comment_dups);
   const mapping = autoMap(headers, rules);
   const report = runAudit({ records, mapping, headers, rules });
   const s = stats.comments;
+  const want = expected.comment_duplicates;
   assert.equal(report.load.shape, "one_row_per_comment");
   assert.equal(report.load.rows, s.rows_with_duplicates);
   assert.equal(report.load.duplicate_rows, s.exact_duplicate_rows_with_duplicates);
   assert.equal(report.load.cases, s.cases, "duplicates must not invent cases");
-  assert.equal(report.checks.C4.outcome, expected.comment_duplicates.C4);
+  assert.equal(report.load.conflict_cases, 0, "the collapse is clean, which is why C4 passes");
+
+  // 1. Case level only: the collapse is clean, so this passes.
+  assert.equal(report.checks.C4.outcome, want.C4);
+
+  // 2. Still dropped, still counted, and the likely cause named.
   assert.equal(report.load.dropped[0].rows, s.exact_duplicate_rows_with_duplicates);
+  assert.match(report.load.dropped[0].note, /no comment ID or timestamp/);
+  assert.match(report.load.dropped[0].note, /floor rather than a count/);
+
+  // 3. A caution on whatever reads comment text or counts, and on nothing else.
+  assert.deepEqual(report.cautions.map((c) => c.id), want.cautions);
+  assert.equal(report.cautions[0].rows, s.exact_duplicate_rows_with_duplicates);
+  const cautioned = Object.values(report.checks).filter((c) => c.cautions).map((c) => c.id);
+  assert.deepEqual(cautioned, want.cautioned_checks);
+  assert.deepEqual(report.drivers.results.filter((r) => r.cautions).map((r) => r.id), want.cautioned_drivers);
+
+  // A caution is not a block: the cautioned check keeps the verdict it earned, and
+  // nothing is locked by it.
+  assert.equal(report.checks.AI1.outcome, expected.snapshot.checks.AI1);
+  for (const [id, state] of Object.entries(expected.snapshot.signals))
+    assert.equal(report.signals.find((x) => x.id === id).state, state, `signal ${id}`);
 });
+
+// Requirement 4, stated as its own test rather than left implicit in the snapshot's
+// expectations: the new rule must not soften a plain export that repeats a case.
+test("a one-row-per-case export with repeated rows still fails C4", () => {
+  const row = "LS-1,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent A,Login issue";
+  const csv = parseCSV(["case_id,created_at,closed_at,status,owner,reason", row, row,
+    "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question"].join("\n"));
+  const mapping = autoMap(csv.headers, rules);
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.equal(report.load.shape, "one_row_per_case", "no case spans two distinct rows");
+  assert.equal(report.load.duplicate_rows, 1);
+  // Two of three rows share a case ID, which is nowhere near the amber band.
+  assert.equal(report.checks.C4.outcome, "fail");
+  assert.equal(report.checks.C4.value, 2 / 3);
+  assert.match(report.checks.C4.detail, /share a case ID/);
+  // No comment columns, so nothing is cautioned and no drop note is invented.
+  assert.deepEqual(report.cautions, []);
+  assert.equal(report.load.dropped[0].note, undefined);
+});
+
+// Rows with no case ID at all counted towards C4 before this change and still do:
+// nothing tells them apart, which is the same fault by a different route. They are
+// named separately, because "shares an ID" and "has no ID" are different things to fix.
+test("rows with no case ID still count towards C4, and are named as their own cause", () => {
+  const head = "case_id,created_at,closed_at,status,owner,reason";
+  const run = (rows) => {
+    const csv = parseCSV([head, ...rows].join("\n"));
+    return runAudit({ records: csv.records, mapping: autoMap(csv.headers, rules), headers: csv.headers, rules });
+  };
+  const a = "LS-1,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent A,Login issue";
+  const blank = ",2026-01-03 09:00,2026-01-04 09:00,Solved,Agent B,Billing question";
+  const c = "LS-2,2026-01-05 09:00,2026-01-06 09:00,Solved,Agent C,SSO";
+
+  const blankOnly = run([a, blank, c]);
+  assert.equal(blankOnly.load.no_id_rows, 1);
+  assert.equal(blankOnly.checks.C4.value, 1 / 3);
+  assert.match(blankOnly.checks.C4.detail, /carries no case ID/);
+  assert.doesNotMatch(blankOnly.checks.C4.detail, /shares? a case ID/);
+
+  // Both causes at once are added together and both said, in singular English.
+  const both = run([a, a, blank, c]);
+  assert.equal(both.checks.C4.value, 3 / 4);
+  assert.match(both.checks.C4.detail, /2 rows share a case ID/);
+  assert.match(both.checks.C4.detail, /1 row carries no case ID/);
+  assert.doesNotMatch(both.checks.C4.detail, /1 rows|carry no case ID/, "no \"1 rows\"");
+
+  // A clean file says so, and nothing is invented about drops that didn't happen.
+  const clean = run([a, c]);
+  assert.equal(clean.checks.C4.outcome, "pass");
+  assert.equal(clean.checks.C4.detail, "No repeated case IDs.");
+});
+
+// And the same shape at the scale the demo plants it, against the expectation the
+// ordinary exports already carry.
+for (const which of ["snapshot", "history"]) {
+  test(`${which}: repeated case rows still land on C4 as before`, () => {
+    const { report } = audit(which);
+    assert.equal(report.load.shape, "one_row_per_case");
+    assert.equal(report.checks.C4.outcome, expected[which].checks.C4);
+    assert.match(report.checks.C4.detail, /share a case ID/);
+    assert.deepEqual(report.cautions, []);
+  });
+}
 
 // Hand-built, so each of the three causes of a repeated case ID is present once and
 // can be told apart by name.
@@ -558,9 +655,14 @@ test("true duplicates, comment rows and a case-level conflict are told apart", (
   // First row in file order wins a genuine disagreement, and it is reported.
   assert.equal(byId.get("LS-3").owner, "Agent C");
 
-  // One redundant copy in nine rows is 11%, well past C4's amber band.
+  // C4 fails here, but on the conflict rather than the copy: one case of four
+  // collapsed dirty, which is 25%. The redundant copy is still counted and reported,
+  // and on its own it would not have failed anything.
   assert.equal(report.checks.C4.outcome, "fail");
+  assert.equal(report.checks.C4.conflict_cases, 1);
+  assert.equal(report.checks.C4.value, 1 / 4);
   assert.equal(report.checks.C4.duplicate_rows, 1);
+  assert.match(report.checks.C4.detail, /disagree about a case field/);
   // Each case counted once: four cases, not nine.
   assert.equal(report.meta.cases, 4);
   assert.equal(report.meta.rows, 9);

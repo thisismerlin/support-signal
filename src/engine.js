@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.4.0";
+export const ENGINE_VERSION = "0.5.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -239,6 +239,8 @@ const sameTheme = (a, b, normalise) => (normalise ? nearDuplicate(a, b) : plainE
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const quantile = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const pct = (x, d = 0) => (x == null ? "n/a" : `${(x * 100).toFixed(d)}%`);
+// "1 row" / "2 rows". Detail lines are read by people, and "1 rows" reads as a bug.
+const plural = (k, one, many = `${one}s`) => `${k.toLocaleString()} ${k === 1 ? one : many}`;
 const truthy = (v) => /^(y|yes|true|1|t)$/i.test(String(v).trim());
 const isClosedStatus = (s) => /solved|closed|resolved|done|complete/i.test(s);
 
@@ -309,7 +311,7 @@ export function collapseRows({ records, headers = null, map, rules }) {
     groups.get(key).push(r);
   });
 
-  let duplicateRows = 0, commentRows = 0, multiRowCases = 0;
+  let duplicateRows = 0, commentRows = 0, multiRowCases = 0, conflictCases = 0;
   const conflictCount = new Map();
   const cases = [];
 
@@ -326,13 +328,17 @@ export function collapseRows({ records, headers = null, map, rules }) {
     if (kept.length > 1) { multiRowCases++; commentRows += kept.length; }
 
     const c = {};
+    let conflicted = false;
     for (const k of Object.keys(rules.fields)) {
       if (isCommentField(rules.fields[k])) { c[k] = get(kept[0], k); continue; }
       if (!map[k]) { c[k] = undefined; continue; }
       const a = agree(kept, (r) => get(r, k));
       c[k] = a.value;
-      if (a.conflict && kept.length > 1) conflictCount.set(k, (conflictCount.get(k) || 0) + 1);
+      if (a.conflict && kept.length > 1) { conflictCount.set(k, (conflictCount.get(k) || 0) + 1); conflicted = true; }
     }
+    // Counted per case as well as per field: a case whose rows disagree about two
+    // fields is one dirty collapse, and C4 measures cases, not field-disagreements.
+    if (conflicted) conflictCases++;
 
     // Every row of the case is a comment when the export carries comment columns.
     c._comments = commentKeys.length ? kept.map((r) => {
@@ -354,6 +360,9 @@ export function collapseRows({ records, headers = null, map, rules }) {
       c._comments.sort((a, b) => (a._at ?? Infinity) - (b._at ?? Infinity));
     }
     c._rows = kept.length;
+    // Rows before identical copies were dropped. C4 needs this in a one-row-per-case
+    // export, where a repeated case ID is the fault being measured.
+    c._rawRows = rows.length;
     cases.push(c);
   }
 
@@ -364,7 +373,8 @@ export function collapseRows({ records, headers = null, map, rules }) {
 
   return { cases, real, ph, shape, rows: records.length, duplicate_rows: duplicateRows,
     comment_rows: commentRows, multi_row_cases: multiRowCases, no_id_rows: noIdRows,
-    conflicts, case_level_fields: caseKeys, comment_fields: commentKeys.filter((k) => map[k]) };
+    conflicts, conflict_cases: conflictCases,
+    case_level_fields: caseKeys, comment_fields: commentKeys.filter((k) => map[k]) };
 }
 
 // Per-case values the checks and signals read. Derived after collapsing, so a case
@@ -421,7 +431,14 @@ function summariseLoad(L, U, rules) {
           : `Not in the export, and no column says which comments were public, so taken from the latest comment of any kind on each of ${lastFrom.length.toLocaleString()} cases. Internal notes count towards it.` });
   }
   const dropped = [];
-  if (L.duplicate_rows) dropped.push({ reason: "Repeated an earlier row identically in every column", rows: L.duplicate_rows });
+  if (L.duplicate_rows) {
+    const c = (rules.cautions || {}).dropped_comment_rows;
+    dropped.push({ reason: "Repeated an earlier row identically in every column", rows: L.duplicate_rows,
+      // In a comment export the likely cause is worth saying, because it changes what
+      // the comment counts mean. In a one-row-per-case export the rows are simply
+      // redundant copies and C4 counts them, so there is nothing to explain away.
+      ...(L.shape === "one_row_per_comment" && c ? { note: c.text.trim() } : {}) });
+  }
   return {
     shape: L.shape,
     rows: L.rows, cases: U.length,
@@ -435,6 +452,9 @@ function summariseLoad(L, U, rules) {
       ? { min: Math.min(...perCase), median: median(perCase), max: Math.max(...perCase) } : null,
     comment_fields: L.comment_fields,
     conflicts: L.conflicts,
+    // Cases with at least one disagreeing field, which is what C4 measures in a
+    // comment export; `conflicts` counts per field and a case can appear in two.
+    conflict_cases: L.conflict_cases,
     dropped, derived,
   };
 }
@@ -446,6 +466,41 @@ export function readSummary({ records, headers = null, map, rules }) {
   const U = L.cases.map((c) => deriveCase(c, { map, real: L.real }));
   return summariseLoad(L, U, rules);
 }
+
+// The measure for a one-row-per-case export: rows that don't identify one case on
+// their own. Every row of a repeated ID counts, because in that shape there is no
+// reason for a second row to exist. Rows with no ID at all count too, for the same
+// reason as ever: nothing tells them apart. They are reported separately, though,
+// because "shares an ID" and "has no ID" are different things to go and fix.
+function unidentifiedRows(cases, rows) {
+  const counts = new Map();
+  let blank = 0;
+  for (const c of cases) {
+    if (!c.case_id) { blank += c._rawRows; continue; }
+    counts.set(c.case_id, (counts.get(c.case_id) || 0) + c._rawRows);
+  }
+  let repeated = 0;
+  for (const k of counts.values()) if (k > 1) repeated += k;
+  return { repeated, blank, share: rows ? (repeated + blank) / rows : 0 };
+}
+
+// ---------- cautions ----------
+// A caution says a number was measured on data that arrived thinned. It is attached
+// to whatever declared that it reads the thinned thing, and it never changes an
+// outcome, a state or a lock: a caveat on a measurement is not a verdict on an export.
+function activeCautions(rules, L) {
+  const out = [];
+  for (const [id, c] of Object.entries(rules.cautions || {})) {
+    // Only one condition so far, and it belongs with the caution that depends on it.
+    if (id === "dropped_comment_rows" && !(L.shape === "one_row_per_comment" && L.duplicate_rows)) continue;
+    out.push({ id, title: c.title, text: c.text.trim(), reads: c.applies_to_reads || [],
+      ...(id === "dropped_comment_rows" ? { rows: L.duplicate_rows } : {}) });
+  }
+  return out;
+}
+// What a check, signal or driver flag hears, given what it declared it reads.
+const cautionsFor = (active, reads) =>
+  (!reads || !reads.length) ? [] : active.filter((c) => c.reads.some((t) => reads.includes(t)));
 
 // ---------- the audit ----------
 export function runAudit({ records, mapping, headers = null, history = null, bot = null, rules, source = "upload" }) {
@@ -465,6 +520,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const has = (k) => !!map[k] || derivedFields.has(k);
 
   const R = {};
+  const cautions = activeCautions(rules, L);
   const checkDef = Object.fromEntries(rules.checks.map((c) => [c.id, c]));
   const set = (id, outcome, value, display, detail, extra = {}) => {
     const d = checkDef[id];
@@ -473,8 +529,10 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const title = outcome === "pass" ? d.title
       : outcome === "warn" && d.warn_title ? d.warn_title
       : d.failure_title || d.title;
+    const heard = cautionsFor(cautions, d.reads);
     R[id] = { id, band: d.band, title, rule_title: d.title,
-      outcome, value, display, detail, threshold: describeThreshold(d.threshold), ...extra };
+      outcome, value, display, detail, threshold: describeThreshold(d.threshold),
+      ...(heard.length ? { cautions: heard } : {}), ...extra };
   };
   // Fill rates are per case, never per row: in a comment export a row count would
   // weight a case with forty comments forty times.
@@ -522,18 +580,39 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       `History starts ${start}. ${pct(1 - covered)} of cases were created before then and look as if they never moved.`);
   }
 
-  // C4. A redundant copy is a row identical to an earlier one in every column. A
-  // repeated case ID whose rows differ is the file's shape, reported separately, so
-  // a one-row-per-comment export is not failed for being what it is.
-  const dupRows = L.duplicate_rows;
-  const dupShare = n ? dupRows / n : 0;
-  const shapeNote = L.shape === "one_row_per_comment"
-    ? ` ${L.multi_row_cases.toLocaleString()} cases span more than one row: this export is one row per comment, not per case, and was collapsed before these checks ran.`
-    : "";
-  set("C4", has("case_id") ? evalThreshold(dupShare, checkDef.C4.threshold) : "not_in_export", dupShare, pct(dupShare, 1),
-    (dupRows ? `${dupRows.toLocaleString()} rows repeat an earlier row identically in every column.`
-      : "No row repeats another identically.") + shapeNote,
-    { shape: L.shape, duplicate_rows: dupRows, rows: n, cases: u });
+  // C4, at case level, which means a different measurement in each shape.
+  //
+  // One row per case: a repeated case ID is two rows for one case, the old measure.
+  // One row per comment: the case fields repeat on every row by design, so case
+  // uniqueness still holds once collapsed and resolution analysis is unaffected. What
+  // can still go wrong is a dirty collapse, where a case's rows disagree about a case
+  // field and one value has to be discarded. That is what is measured there.
+  //
+  // Rows identical in every column are dropped before either measurement. In a
+  // one-row-per-case export they are also a repeated case ID, so they count. In a
+  // comment export they do not: they are reported in what was read and raise a
+  // caution on anything read from comment text or counts, and nothing more.
+  const comments = L.shape === "one_row_per_comment";
+  const conflictCases = L.conflict_cases;
+  const ident = comments ? null : unidentifiedRows(L.cases, n);
+  const c4Value = comments ? (u ? conflictCases / u : 0) : ident.share;
+  // Identical rows are dropped in either shape, but they mean opposite things: in a
+  // one-row-per-case export they are the repeated case ID being measured, and in a
+  // comment export they are a thinned comment log and nothing to do with the cases.
+  const dropNote = !L.duplicate_rows ? ""
+    : comments
+      ? ` ${plural(L.duplicate_rows, "row")} identical in every column ${L.duplicate_rows === 1 ? "was" : "were"} dropped before this was measured. They thin the comment log, not the cases, so they don't count here; what was read says how many.`
+      : ` ${plural(L.duplicate_rows, "row")} identical in every column ${L.duplicate_rows === 1 ? "was" : "were"} dropped before this was measured.`;
+  const c4Detail = comments
+    ? `${L.multi_row_cases.toLocaleString()} cases span more than one row: this export is one row per comment, not per case, and was collapsed before these checks ran. ` +
+      (L.conflicts.length
+        ? `${plural(conflictCases, "case")} ${conflictCases === 1 ? "has" : "have"} rows that disagree about a case field (${L.conflicts.map((c) => `${c.label.toLowerCase()} on ${c.cases.toLocaleString()}`).join(", ")}), so the collapse kept one value and dropped the rest.`
+        : "Every case's rows agree on every case-level field, so the collapse is clean and each case is counted once.") + dropNote
+    : ([ident.repeated ? `${plural(ident.repeated, "row")} ${ident.repeated === 1 ? "shares" : "share"} a case ID with another row` : "",
+        ident.blank ? `${plural(ident.blank, "row")} ${ident.blank === 1 ? "carries" : "carry"} no case ID, so nothing tells ${ident.blank === 1 ? "it apart from another" : "them apart"}` : "",
+       ].filter(Boolean).join(", and ") || "No repeated case IDs") + "." + dropNote;
+  set("C4", has("case_id") ? evalThreshold(c4Value, checkDef.C4.threshold) : "not_in_export", c4Value, pct(c4Value, 1), c4Detail,
+    { shape: L.shape, duplicate_rows: L.duplicate_rows, conflict_cases: conflictCases, rows: n, cases: u });
 
   // B1
   const routing = ["owner", "group", "reason"].filter(has);
@@ -715,7 +794,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
 
   // ---------- signals ----------
-  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, U, real, rules, hist }));
+  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, U, real, rules, hist, cautions }));
 
   // ---------- fix first ----------
   const blockCount = {};
@@ -727,7 +806,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     .sort((a, b) => b[1] - a[1] || rank[R[b[0]].outcome] - rank[R[a[0]].outcome]).slice(0, 3).map(([id]) => id);
 
   // ---------- drivers ----------
-  const drivers = computeDrivers({ U, has, real, rules });
+  const drivers = computeDrivers({ U, has, real, rules, cautions });
 
   const load = summariseLoad(L, U, rules);
 
@@ -736,7 +815,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       rows: n, cases: u, shape: L.shape, history_rows: history ? history.length : 0, bot_rows: botRows.length,
       generated: new Date().toISOString() },
     load,
-    checks: R, uses, signals, fixFirst, drivers, resolution_audit,
+    checks: R, uses, signals, fixFirst, drivers, resolution_audit, cautions,
     vendor_questions: rules.vendor_questions,
   };
 }
@@ -837,7 +916,11 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, outcome, real }) {
 // ---------- signals ----------
 function computeSignal(s, ctx) {
   const { R, useById, has, U, real, hist } = ctx;
-  const base = { id: s.id, title: s.title, shows: s.shows, disclaimer: s.disclaimer };
+  // Carried into every return below, locked ones included: a caution is a caveat on a
+  // number, so it rides along with the signal rather than deciding whether it runs.
+  const heard = cautionsFor(ctx.cautions || [], s.reads);
+  const base = { id: s.id, title: s.title, shows: s.shows, disclaimer: s.disclaimer,
+    ...(heard.length ? { cautions: heard } : {}) };
   for (const f of s.requires_fields || []) if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
   if (s.unlocked_by_uses) {
     const blocked = s.unlocked_by_uses.map((id) => useById[id]).filter((x) => x.outcome === "fail" || x.outcome === "not_in_export");
@@ -912,7 +995,7 @@ function groupShare(arr, keyFn, hitFn) {
 }
 
 // ---------- drivers: why most aren't ----------
-export function computeDrivers({ U, has, real }) {
+export function computeDrivers({ U, has, real, cautions = [] }) {
   if (!has("account_id") || !has("churned")) return { available: false, reason: "Needs an account column and an account outcome (churned) column." };
   const stratKey = has("segment") ? "segment" : has("account_size") ? "account_size" : null;
   const acc = new Map();
@@ -930,7 +1013,8 @@ export function computeDrivers({ U, has, real }) {
     { id: "phone", label: "Any phone contact", fn: any((c) => /phone|call/i.test(c.channel || "")), need: "channel" },
     { id: "other", label: "Any case logged as Other or blank", fn: any((c) => !real(c.reason)), need: "reason" },
     // Reads the comment text as well, through the same accessor the text checks use.
-    { id: "billing", label: "Any billing or invoice case", fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject} ${c._commentText}`)) },
+    { id: "billing", label: "Any billing or invoice case", reads: ["comment_text"],
+      fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject} ${c._commentText}`)) },
     { id: "lowcsat", label: "Any CSAT of 1 or 2", fn: any((c) => Number(c.csat_score) >= 1 && Number(c.csat_score) <= 2), need: "csat_score" },
     { id: "reopen", label: "Any reopened case", fn: any((c) => Number(c.reopen_count) > 0), need: "reopen_count" },
     { id: "slow", label: "Any case open 30+ days", fn: any((c) => c._days != null && c._days > 30) },
@@ -949,7 +1033,9 @@ export function computeDrivers({ U, has, real }) {
     const prevalence = (raw.a + raw.b) / A.length;
     const holds = !!adj && adj.lo > 1;
     const verdict = !adj ? "too_few" : adj.lo > 1 ? "holds" : adj.hi < 1 ? "reverses" : "falls_away";
-    return { id: f.id, label: f.label, prevalence, raw: rawOR, adj, holds, verdict };
+    const heard = cautionsFor(cautions, f.reads);
+    return { id: f.id, label: f.label, prevalence, raw: rawOR, adj, holds, verdict,
+      ...(heard.length ? { cautions: heard } : {}) };
   });
   const churnRate = A.filter((a) => a.churned).length / A.length;
   return { available: true, accounts: A.length, churn_rate: churnRate, controls: [stratKey ? (stratKey === "segment" ? "product" : "account size") : null, "case volume band"].filter(Boolean), results };

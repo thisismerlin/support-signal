@@ -10,7 +10,7 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.7.0
+  version: 0.8.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -143,22 +143,35 @@ checks:
     band: C
     dimension: uniqueness
     title: Each case appears once
-    failure_title: Duplicate rows found
-    metric: Share of rows that repeat an earlier row identically in every column
+    failure_title: Cases appear more than once
+    warn_title: Some cases appear more than once
+    # Judged at case level, and what that means depends on the file's shape. The
+    # engine picks by shape; both are this one question asked of the shape in hand.
+    metric: >-
+      One row per case: share of rows whose case ID appears more than once. One row per
+      comment: share of cases whose case-level columns disagree between their rows.
     threshold: { dir: lower, pass: 0.0, warn: 0.01, provisional: true }
     why: >-
-      A redundant copy inflates volume and distorts every rate. A repeated case ID on
-      its own does not: an export with one row per comment or email repeats the case
-      fields on every row by design, which is a shape, not a fault. Only rows
-      identical in every column are counted here; the shape is reported separately,
-      with the comment rows read rather than discarded.
+      Two rows for one case inflate volume and distort every rate. A repeated case ID
+      is only that, though, when the export is one row per case. An export with one row
+      per comment or email repeats the case fields on every row by design: case
+      uniqueness still holds once the rows are collapsed, so resolution time, counts
+      and rates are unaffected, and the shape is named rather than failed. What can
+      still go wrong there is a dirty collapse, where two rows of one case claim
+      different owners or statuses and one of them has to be discarded. That is what
+      this measures in a comment export.
     fix: >-
-      Deduplicate on the whole row. If the case ID repeats but the rows differ,
-      nothing needs fixing here: the export is one row per comment, and it is read
-      as such rather than discarded.
+      In a one-row-per-case export, deduplicate on case ID and check whether the export
+      joined a one-to-many table. In a one-row-per-comment export, nothing here needs
+      fixing unless a case's rows disagree; then find what writes a case field per
+      comment row, because the collapse keeps the first value and drops the rest.
     note: >-
-      Measured on redundant copies only, so one case ID across twenty comment rows
-      counts as nothing to fix, while the same row sent twice counts once.
+      Rows identical in every column are dropped before this is measured, in either
+      shape, and reported in what was read. In a one-row-per-case export they are also
+      a repeated case ID, so they count here. In a one-row-per-comment export they do
+      not: they often mean the export carries no comment ID or timestamp, so two short
+      replies look identical, and that is a reason to treat the comment counts as a
+      floor rather than to distrust the cases.
     refs: [dama-nl]
 
   - id: B1
@@ -278,6 +291,10 @@ checks:
     why: Without the customer's own words you can't discover what they want, the first job of any AI self-help project.
     fix: Include the first customer message. Zendesk CSV exports leave out descriptions, so use JSON or the API.
     refs: [zendesk-exports]
+    # In a one-row-per-comment export this check counts comment bodies as wording, so
+    # anything that thinned the comment rows is a caution on it. Declared here rather
+    # than as a list of check IDs in the engine.
+    reads: [comment_text]
 
   - id: AI2
     band: B
@@ -422,6 +439,23 @@ signals:
     unlocked_by_uses: [ai, transfers]
     shows: Reasons with long resolution times or many owners
     disclaimer: Where automation is most likely to frustrate customers.
+
+# Non-blocking cautions. A caution says a number was measured on data that reached
+# the engine thinned, and names what to allow for. It never changes an outcome, a
+# state or a lock: a caveat on a measurement is not a verdict on the export.
+#
+# `applies_to_reads` matches the `reads:` tag a check, signal or driver flag
+# declares, so a new reader of comment text inherits the caution by saying so.
+cautions:
+  dropped_comment_rows:
+    applies_to_reads: [comment_text, comment_count]
+    title: Comment rows were dropped as identical
+    text: >-
+      Rows identical in every column were dropped before this was measured, so the
+      comment counts are a floor rather than a count. This often means the export
+      carries no comment ID or timestamp: two short replies sent at the same minute,
+      such as "Thanks" twice, then look like one row sent twice. The cases themselves
+      are unaffected, which is why C4 passes.
 
 # Parameters for the resolution audit. Every value is provisional: a starting
 # point to calibrate against real bot exports, not evidence. Don't quote them

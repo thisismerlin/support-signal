@@ -138,6 +138,7 @@
         const refs = (d.refs || []).map((k) => `<a href="${esc(RULES.refs[k].url)}" target="_blank" rel="noopener">${esc(RULES.refs[k].title)}</a>`).join(", ");
         return `<details class="chk" id="check-${c.id}"><summary>${chip(c.outcome)}<span class="chk-t">${esc(c.title)}</span><span class="chk-v">${esc(c.display)}</span></summary>
           <div class="chk-body"><p>${esc(c.detail)}</p>
+          ${(c.cautions || []).map((x) => `<p class="chk-caution"><strong>${esc(x.title)}.</strong> ${esc(x.text)}</p>`).join("")}
           <dl><dt>Why it matters</dt><dd>${esc(d.why)}</dd><dt>How to fix</dt><dd>${esc(d.fix)}</dd><dt>Measured as</dt><dd>${esc(d.metric)}</dd>
           ${c.threshold ? `<dt>Threshold</dt><dd>${esc(c.threshold)}${d.threshold && d.threshold.provisional ? " (provisional)" : ""}</dd>` : ""}
           ${d.note ? `<dt>Note</dt><dd>${esc(d.note)}</dd>` : ""}
@@ -266,7 +267,13 @@
     } else if (comment && !L.comment_fields.length) {
       bits.push(`<li>No comment columns were recognised, so the extra rows were collapsed but their contents couldn't be read. Map a comment body and time below to use them.</li>`);
     }
-    if (L.duplicate_rows) bits.push(`<li><strong>${n(L.duplicate_rows)} rows dropped</strong>: each repeated an earlier row identically in every column.</li>`);
+    if (L.duplicate_rows) {
+      // The note is only set where the drop changes what a number means, so it is
+      // printed when the engine supplies one rather than written out again here.
+      const d = (L.dropped || []).find((x) => x.note);
+      bits.push(`<li><strong>${n(L.duplicate_rows)} rows dropped</strong>: each repeated an earlier row identically in every column.${
+        d ? ` ${esc(d.note)}` : ""}</li>`);
+    }
     if (L.no_id_rows) bits.push(`<li><strong>${n(L.no_id_rows)} rows have no case ID.</strong> Each is counted as its own case, because there is nothing to group it by.</li>`);
     for (const d of L.derived || []) bits.push(`<li><strong>${esc(d.label)} derived.</strong> ${esc(d.detail)}</li>`);
     const conflicts = (L.conflicts || []).map((c) =>

@@ -22,7 +22,8 @@
     "drivers_hold": ["slow", "slow_passed"]
   },
 
-  "_comments": "larkspur_comment_rows.csv is the same cases as one row per case comment, with last_update_at dropped so it has to be derived. Collapsing must give the snapshot's verdicts exactly, so these are asserted to equal the snapshot block above rather than listed independently. Row and comment counts live in generation_stats.json.",
+  "_comments": "larkspur_comment_rows.csv is the same cases as one row per case comment, with last_update_at dropped so it has to be derived. Collapsing must give the snapshot's verdicts exactly, with one deliberate exception: C4. The snapshot's 25 repeated case rows are an amber duplicate there and expand to identical comment rows here, where case uniqueness still holds after collapsing, so C4 passes. Named in comments_differ_from_snapshot so the exception has to be stated rather than discovered. Row and comment counts live in generation_stats.json.",
+  "comments_differ_from_snapshot": { "C4": "pass" },
   "comments": {
     "checks": {
       "C1": "pass", "C2": "not_in_export", "C3": "not_in_export", "C4": "warn",
@@ -32,8 +33,13 @@
     }
   },
 
-  "_comment_duplicates": "larkspur_comment_rows_with_duplicates.csv repeats individual comment rows, not whole cases, until the duplicate share clears C4's amber band. The shape must not excuse a row sent twice.",
-  "comment_duplicates": { "C4": "fail" },
+  "_comment_duplicates": "larkspur_comment_rows_with_duplicates.csv repeats individual comment rows, not whole cases: 529 of 15,689, which would have cleared C4's old amber band. C4 judges cases, and these rows collapse to the same 5,083 clean cases, so it passes. The rows are still dropped, still reported in what was read, and still raise a caution on anything read from comment text or counts.",
+  "comment_duplicates": {
+    "C4": "pass",
+    "cautions": ["dropped_comment_rows"],
+    "cautioned_checks": ["AI1"],
+    "cautioned_drivers": ["billing"]
+  },
 
   "_bot": "The bot exports, each read alongside the case snapshot. Counts aren't repeated here: the tests read them from generation_stats.json, which the generator writes.",
   "bot": {

@@ -22,7 +22,9 @@ console.log("READ", `shape=${L.shape}`, `rows=${L.rows}`, `cases=${L.cases}`,
   L.comments_per_case ? `per_case=${L.comments_per_case.min}/${L.comments_per_case.median}/${L.comments_per_case.max}` : "");
 for (const d of L.derived) console.log("DERIVED", d.field, `(${d.from})`, d.cases, "cases");
 for (const c of L.conflicts) console.log("CONFLICT", c.field, c.cases, "cases disagree between their rows");
-for (const d of L.dropped) console.log("DROPPED", d.rows, "rows:", d.reason);
+for (const d of L.dropped) console.log("DROPPED", d.rows, "rows:", d.reason, d.note ? `\n        ${d.note}` : "");
+// Cautions: caveats on numbers, never verdicts, so they print before the verdicts do.
+for (const c of rep.cautions) console.log("CAUTION", c.id, `-> ${c.reads.join(", ")}:`, c.text);
 for (const c of Object.values(rep.checks)) console.log(c.id.padEnd(4), c.outcome.padEnd(14), String(c.display).padEnd(14), c.detail);
 for (const u of rep.uses) console.log("USE", u.id.padEnd(10), u.outcome.padEnd(14), u.blockers.join(","));
 for (const s of rep.signals) console.log("SIG", s.id.padEnd(13), s.state.padEnd(8), s.headline || s.reason || "");
