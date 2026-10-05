@@ -1,2 +1,8 @@
 node_modules/
 .venv/
+
+# Claude Code's scratch space: worktrees it creates for isolated work. Nothing in
+# here is project configuration, and a committed worktree would nest the repo in
+# itself. Narrow this to .claude/worktrees/ if project-level Claude config is
+# ever added and should be shared.
+.claude/
