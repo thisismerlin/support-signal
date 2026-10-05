@@ -39,6 +39,11 @@ can't tell. "Not contradicted" means silence, not success.
 - **It runs entirely in your browser.** Your file is read by the page and never
   leaves your machine. Nothing is uploaded, stored or sent anywhere, and there is
   no server.
+- **A saved mapping is column names only.** The page can save which of your columns
+  goes to which field, so next month's export doesn't have to be mapped from
+  scratch. That file holds column names and the date order you chose, nothing
+  else — no case data and no values. It is a file you keep rather than anything
+  stored in your browser, which still persists nothing.
 - **The report quotes a little of your data back, so check it before sharing.**
   Running in the browser is only half of it: a report you paste elsewhere has to
   be safe to paste. The report quotes only short labels from the columns you

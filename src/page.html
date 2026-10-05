@@ -271,6 +271,11 @@ table.map select { font: inherit; max-width: 100%; padding: 7px 10px; border: 1p
 /* An upload status that is a caution, not a count. */
 .status-warn { color: var(--warn); }
 .map-means { color: var(--muted); font-weight: 400; }
+/* Saving and reloading a column mapping. */
+.preset { display: grid; gap: 10px; margin-top: 20px; }
+.preset .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.preset-note { font-size: 0.8125rem; color: var(--muted); letter-spacing: -0.005em; max-width: 68ch; }
+.preset label.btn { cursor: pointer; }
 /* The date-order choice, in the row that maps the column it is about. */
 .map-order { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 8px; font-size: 0.8125rem; color: var(--warn); }
 .map-order select { font: inherit; padding: 4px 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--tile); color: var(--ink); }
@@ -435,6 +440,15 @@ footer p { max-width: 86ch; }
     <p class="status" id="bot-status" aria-live="polite"></p>
     <div id="load-read" aria-live="polite"></div>
     <div id="mapping"></div>
+    <div class="preset" id="preset" hidden>
+      <div class="row">
+        <button type="button" class="btn btn-ghost" id="preset-save">Save this mapping</button>
+        <label class="btn btn-ghost" for="file-preset">Load a saved mapping</label>
+        <input type="file" id="file-preset" accept=".json,application/json" hidden>
+      </div>
+      <p class="preset-note">A saved mapping holds which of your columns goes to which field, and the date order where you chose one. Column names only: no case data and no values. Nothing is kept in your browser, so the file is yours to store and reuse on next month's export. Worth re-checking each time, because your export may have changed since.</p>
+      <p class="status" id="preset-status" aria-live="polite"></p>
+    </div>
     <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
   </section>
 

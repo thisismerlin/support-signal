@@ -16,7 +16,7 @@
 # commit SHA, stamped into dist by the deploy workflow -- a commit cannot contain its
 # own SHA, so it is not committed, and an unstamped build says so rather than lying.
 meta:
-  version: 0.12.0
+  version: 0.13.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -371,8 +371,21 @@ checks:
     title: Reason codes are a tidy set
     failure_title: Reason codes have sprawled
     too_few_title: Reason codes can't be judged
-    metric: Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times
-    why: Duplicates like "SSO" and "Single sign-on" split one issue in two and make trends meaningless.
+    metric: Near-duplicate reason pairs (green none, amber up to 3), share of reasons used fewer than 5 times, and how many distinct reasons there are per 1,000 cases
+    # How many reason codes is too many, as a rate rather than a count, so it travels
+    # across export sizes: 400 codes over half a million cases is a taxonomy, 400 over
+    # five thousand is not. The two older tests only ever looked at the thin end of the
+    # distribution -- near-duplicate names and reasons used fewer than five times -- so
+    # 400 codes used about thirteen times each scored zero on both and passed green,
+    # while printing the count that proved the point.
+    #
+    # PROVISIONAL. Sited between the demo's 5.3 per 1,000 and the reported 78.7, not
+    # calibrated against a body of real exports. Don't quote it publicly.
+    sprawl_threshold: { dir: lower, pass: 10, warn: 25, provisional: true }
+    why: >-
+      Duplicates like "SSO" and "Single sign-on" split one issue in two and make trends
+      meaningless. Too many codes is the same problem from the other end, because a
+      taxonomy nobody can hold in their head is one nobody applies consistently.
     fix: Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.
     refs: [supportbench-taxonomy, xebia-contact-reasons]
 
@@ -639,6 +652,11 @@ signals:
   - id: exit_events
     title: Exit events
     requires_fields: [exit_event]
+    # Its own minimum rather than the evidence floor. Exit events are rare by nature,
+    # so the floor's share test would reject 30 accounts in 5,000 cases, which is a real
+    # signal and the audience for this one is whoever owns retention. A count only.
+    # PROVISIONAL.
+    params: { min_accounts: 5, provisional: true }
     shows: Cancellations and similar events logged in cases, for whoever owns retention
     disclaimer: A commercial warning recorded in support, not something support caused.
   - id: self_help

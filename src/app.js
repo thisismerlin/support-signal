@@ -269,6 +269,7 @@
     const L = readSummary({ records: state.upload.records, headers: state.upload.headers,
       map: state.mapping, rules: RULES, date_order: state.dateOrder });
     state.read = L;    // renderMapping asks it which date columns need an order
+    $("#preset").hidden = !state.upload;
     box.innerHTML = loadBlock(L, { beforeRun: true });
   }
 
@@ -363,9 +364,11 @@
       if (state.refused[k]) return "refused";
       return state.required.has(k) ? "missing" : "none";
     }
+    if (state.confidence[k] === "preset") return "preset";
     return state.confidence[k] === "guess" ? "guess" : "name";
   }
   const MAP_NOTE = {
+    preset: "From your saved mapping",
     name: "Matched by name",
     guess: "Guessed from values",
     missing: "Not found, and needed",
@@ -500,5 +503,58 @@
     try { await navigator.clipboard.writeText(text); $("#copy-status").textContent = "Report copied as JSON."; }
     catch { const t = $("#report-json"); t.hidden = false; t.value = text; t.select(); $("#copy-status").textContent = "Copy the selected text."; }
   });
+  // ---------- saving and reloading a mapping ----------
+  // The engine builds and applies the preset; this only moves bytes to and from a file.
+  // A file rather than browser storage, so the page still persists nothing.
+  function presetName() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    return `support-signal-mapping-${stamp}.json`;
+  }
+  $("#preset-save").addEventListener("click", () => {
+    if (!state.upload) return;
+    const preset = buildMappingPreset({ map: state.mapping, date_order: state.dateOrder, rules: RULES });
+    const blob = new Blob([JSON.stringify(preset, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = presetName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 0);
+    const n = Object.keys(preset.mapping).length;
+    $("#preset-status").textContent = `Saved ${n} mapped ${n === 1 ? "field" : "fields"} to ${a.download}.`;
+    $("#preset-status").classList.remove("status-warn");
+  });
+  $("#file-preset").addEventListener("change", async () => {
+    const text = await readFile($("#file-preset"));
+    const status = $("#preset-status");
+    if (!text) return;
+    let parsed = null;
+    try { parsed = JSON.parse(text); }
+    catch { status.textContent = "That file isn't readable as JSON."; status.classList.add("status-warn"); return; }
+    const res = applyMappingPreset({ preset: parsed, headers: state.upload.headers, rules: RULES });
+    if (!res.ok) { status.textContent = res.problems.join(" "); status.classList.add("status-warn"); return; }
+    // Replace rather than merge: a preset is a whole decision about this export, and a
+    // half-applied one is harder to reason about than a wrong one.
+    state.mapping = { ...res.mapping };
+    state.confidence = {};
+    for (const k of Object.keys(res.mapping)) state.confidence[k] = "preset";
+    state.refused = {};
+    state.dateOrder = { ...res.date_order };
+    const notes = [`Loaded ${res.applied} mapped ${res.applied === 1 ? "field" : "fields"}.`];
+    if (res.missing.length) {
+      // Named, not dropped quietly: the column is gone or renamed, and only the reader
+      // knows which.
+      notes.push(`${res.missing.length === 1 ? "This column is" : "These columns are"} named in the preset but not in this export, so ${res.missing.length === 1 ? "that field was" : "those fields were"} left unmapped: ${res.missing.map((m) => `${m.label} → “${m.column}”`).join(", ")}.`);
+    }
+    if (res.stale_rules) notes.push(`Saved against rules ${res.stale_rules}; this page is ${RULES.meta.version}.`);
+    notes.push(...res.problems);
+    status.textContent = notes.join(" ");
+    status.classList.toggle("status-warn", res.missing.length > 0 || res.problems.length > 0);
+    renderMapping();
+    renderRead();
+    $("#file-preset").value = "";
+  });
+
   setSource("demo-snapshot");
 })();

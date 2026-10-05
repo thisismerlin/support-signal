@@ -130,6 +130,23 @@ for group in ("checks", "signals"):
             elif r["fields"][v].get("shape") != "category":
                 errs.append(f"{group[:-1]} {item['id']} requires_category {v!r}, whose shape is "
                             f"{r['fields'][v].get('shape')!r}, not category")
+# B3's second threshold. The engine reads it by name and evalThreshold dereferences
+# .dir, so a missing or misspelt block is a crash rather than a quiet default.
+b3 = next((c for c in r["checks"] if c["id"] == "B3"), None)
+st = (b3 or {}).get("sprawl_threshold")
+if not isinstance(st, dict):
+    errs.append("check B3 has no sprawl_threshold")
+else:
+    if st.get("dir") != "lower":
+        errs.append("B3 sprawl_threshold.dir must be lower: more codes per 1,000 is worse")
+    for key in ("pass", "warn"):
+        if not isinstance(st.get(key), (int, float)):
+            errs.append(f"B3 sprawl_threshold.{key} must be a number")
+    if isinstance(st.get("pass"), (int, float)) and isinstance(st.get("warn"), (int, float)) \
+            and st["pass"] > st["warn"]:
+        errs.append("B3 sprawl_threshold.pass must be at or below warn for a lower threshold")
+    if st.get("provisional") is not True:
+        errs.append("B3 sprawl_threshold must be marked provisional: it is not calibrated")
 # The evidence floor gates every judgement about what a field's values say, so a
 # missing or nonsensical floor would silently let nearly-empty columns be judged again.
 f = r.get("evidence_floor")

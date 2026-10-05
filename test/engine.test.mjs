@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile, parseDate, dateOrderOf, looksLikeDate, twoDigitYearPivot } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile, parseDate, dateOrderOf, looksLikeDate, twoDigitYearPivot, buildMappingPreset, applyMappingPreset, PRESET_FORMAT } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
@@ -2067,4 +2067,258 @@ test("a US export with a 12-hour clock reads end to end", () => {
   assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
   // Same day, 9:15 to 16:45, so nothing is closed before it was created.
   assert.equal(r.checks.B4.outcome, "pass", r.checks.B4.detail);
+});
+
+// ===================================== the shape gate, on bot fields as well (issue #2)
+// Bot-scope matching mapped the case export wholesale: bot_claimed_resolved onto a prose
+// resolution note, bot_reopens onto a CSAT score, bot_linked_cases onto article IDs. The
+// first is the one that broke the audit -- truthy() on a sentence is false, so every
+// conversation read as not claimed and there was nothing to audit.
+test("a bot field does not take a column whose values contradict its shape", () => {
+  const cases = load("larkspur_snapshot.csv");
+  const r = mapColumns({ headers: cases.headers, rules, scope: "bot", records: cases.records });
+  // The flag field is refused a column of prose.
+  assert.equal(r.map.bot_claimed_resolved, undefined);
+  assert.equal(r.refused.bot_claimed_resolved?.header, "resolution_note");
+  assert.equal(r.refused.bot_claimed_resolved?.reason, "shape_mismatch");
+});
+
+// What the gate cannot do, recorded so nobody reads the fix as wider than it is.
+// contradictsShape asks whether the values rule the field out, not whether they fit it:
+// a CSAT score really is a number and an article ID really is ID-shaped, so neither is
+// a contradiction and neither is refused. They are wrong columns, not impossible ones.
+test("the gate catches contradictions, not every wrong column", () => {
+  const cases = load("larkspur_snapshot.csv");
+  const r = mapColumns({ headers: cases.headers, rules, scope: "bot", records: cases.records });
+  assert.equal(r.map.bot_reopens, "csat_score", "a number is not contradicted by numbers");
+  assert.equal(r.map.bot_linked_cases, "linked_article", "an id is not contradicted by ids");
+  // These are left to the guards that judge what the file contains rather than its
+  // column shapes: with no claimed resolutions, B11 cannot pass whatever is mapped.
+  const rep = runAudit({ records: cases.records, mapping: autoMap(cases.headers, rules),
+    headers: cases.headers, rules, bot: { records: cases.records, headers: cases.headers, mapping: r.map } });
+  assert.notEqual(rep.checks.B11.outcome, "pass");
+});
+
+// The gate must not cost a real bot export anything.
+test("a genuine bot export is unaffected by the bot shape gate", () => {
+  for (const f of ["larkspur_bot_snapshot.csv", "larkspur_bot_with_history.csv"]) {
+    const b = load(f);
+    const m = mapColumns({ headers: b.headers, rules, scope: "bot", records: b.records });
+    assert.deepEqual(m.refused, {}, `${f} had a column refused`);
+    assert.equal(m.map.bot_claimed_resolved, "claimed_resolved", f);
+  }
+  // And the pinned mappings and outcomes still hold, which the demo tests above assert.
+  const full = withBot(botSlot(load("larkspur_bot_with_history.csv")));
+  assert.equal(full.checks.B11.outcome, "pass");
+  assert.ok(full.resolution_audit.claimed > 0);
+});
+
+// ============================================ exit events: one account is not a finding
+// It read "1 accounts" and "1 cases record an exit event", and reported a headline from
+// however many events were in the column. The audience is whoever owns retention, which
+// is where a thin number does damage.
+function exitEventExport(n) {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const rows = records.map((r, i) => ({ ...r, exit_event: i < n ? "Cancellation" : "" }));
+  return runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+}
+const exitSignal = (r) => r.signals.find((s) => s.id === "exit_events");
+const MIN_ACCOUNTS = rules.signals.find((s) => s.id === "exit_events").params.min_accounts;
+
+test("exit events below the declared minimum are not reported as a finding", () => {
+  const s = exitSignal(exitEventExport(1));
+  assert.equal(s.state, "too_few");
+  assert.equal(s.headline, undefined);
+  // Pluralised, and saying how many it had.
+  assert.match(s.reason, /^1 account records an exit event/);
+  assert.match(s.reason, new RegExp(`below the ${MIN_ACCOUNTS} needed`));
+});
+
+test("exit events at or above the minimum are reported, and pluralised", () => {
+  const s = exitSignal(exitEventExport(400));
+  assert.notEqual(s.state, "too_few");
+  assert.match(s.headline, /^\d[\d,]* accounts$/);
+  assert.match(s.detail, /^\d[\d,]* cases record an exit event\.$/);
+});
+
+test("the exit-event minimum is a count on the signal, not the evidence floor's share", () => {
+  const p = rules.signals.find((s) => s.id === "exit_events").params;
+  assert.ok(Number.isInteger(p.min_accounts) && p.min_accounts > 0);
+  assert.equal(p.provisional, true);
+  // Deliberately not the global floor: exit events are rare, and 30 accounts in 5,000
+  // cases is well under its 5% share while being a real signal.
+  const floorShare = rules.evidence_floor.min_share;
+  assert.ok(30 / 5000 < floorShare, "the premise for giving this signal its own minimum");
+});
+
+// The engine has a plural helper; nothing should be hand-rolling its own.
+test("no engine string prints a bare count beside a plural noun", () => {
+  const src = readFileSync(new URL("../src/engine.js", import.meta.url), "utf8");
+  // A template placeholder followed by a space and a word ending in s, inside a string.
+  const bad = [...src.matchAll(/\$\{[^}]*\.length\}\s+[a-z]+s\b/g)].map((m) => m[0]);
+  assert.deepEqual(bad, [], `hand-rolled plurals: ${bad.join(", ")}`);
+});
+
+// ===================================== B3 sees sprawl from both ends now (issue #1)
+// Its two older tests looked only at the thin end of the distribution: names that nearly
+// match, and codes used fewer than five times. 400 codes used about thirteen times each
+// scored zero on both and passed green, while printing the count that proved the point.
+function reasonSpread(codes) {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const rows = records.map((r, i) => ({ ...r, reason: `Reason ${i % codes}` }));
+  return runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+}
+
+test("400 evenly used reason codes no longer pass as a tidy set", () => {
+  const r = reasonSpread(400);
+  const c = r.checks.B3;
+  assert.equal(c.outcome, "fail", c.detail);
+  // No near-duplicates and no rare tail, so the rate is what caught it, and says so.
+  assert.equal(c.pairs_found, 0, "the old tests score zero here");
+  assert.match(c.detail, /0 used fewer than 5 times/);
+  assert.match(c.detail, /codes per 1,000 cases/);
+  assert.ok(c.per_1000_cases > 70);
+});
+
+test("the sprawl rate travels across export sizes", () => {
+  // The same 40 codes is fine over thousands of cases and sprawl over a few hundred.
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const build = (codes, total) => runAudit({
+    records: records.slice(0, total).map((r, i) => ({ ...r, reason: `Reason ${i % codes}` })),
+    mapping: autoMap(headers, rules), headers, rules });
+  const wide = build(40, 5000);
+  const narrow = build(40, 300);
+  assert.ok(wide.checks.B3.per_1000_cases < narrow.checks.B3.per_1000_cases);
+  assert.equal(wide.checks.B3.outcome, "pass", wide.checks.B3.detail);
+  assert.notEqual(narrow.checks.B3.outcome, "pass", narrow.checks.B3.detail);
+});
+
+test("the demo's own taxonomy is unaffected, and still amber on its near-duplicates", () => {
+  for (const which of ["snapshot", "history", "comments"]) {
+    const c = audit(which).report.checks.B3;
+    assert.equal(c.outcome, "warn", `${which}: ${c.detail}`);
+    assert.ok(c.pairs_found > 0, "amber comes from the near-duplicates, not the rate");
+    assert.ok(c.per_1000_cases < rules.checks.find((x) => x.id === "B3").sprawl_threshold.pass,
+      `${which} sits inside the green band on rate`);
+    // The rate is only named when it is what decided the outcome.
+    assert.doesNotMatch(c.detail, /codes per 1,000/);
+  }
+});
+
+test("the sprawl threshold is declared, directional and provisional", () => {
+  const st = rules.checks.find((c) => c.id === "B3").sprawl_threshold;
+  assert.equal(st.dir, "lower", "more codes per 1,000 is worse");
+  assert.ok(st.pass <= st.warn);
+  assert.equal(st.provisional, true);
+  // Sited between the demo and the reported case, which is all that can be claimed.
+  assert.ok(5.31 < st.pass && st.warn < 78.69, "the band must separate the two known points");
+});
+
+// The floor and the free-text gate still come first: a thin or prose column must not be
+// measured for sprawl at all.
+test("sprawl is not measured on a column that cannot be judged", () => {
+  assert.equal(thinReason(2).checks.B3.outcome, "too_few");
+  assert.equal(proseReason().checks.B3.outcome, "free_text");
+});
+
+// ============================================== saving and reloading a mapping (issue #5)
+// Checking the same export monthly meant re-doing the whole mapping each time: the
+// column the matcher guessed wrong, the one it refused, the free-text column moved to
+// resolution note, the date order chosen by hand. All of it lost on reload.
+test("a preset holds the mapping and the chosen date order, and nothing else", () => {
+  const { map } = mapColumns({ headers: SF.headers, rules, records: SF.rows });
+  const preset = buildMappingPreset({ map, date_order: { created_at: "day_first" }, rules });
+  assert.equal(preset.support_signal_mapping, PRESET_FORMAT);
+  assert.equal(preset.rules, rules.meta.version, "says what it was saved against");
+  assert.deepEqual(preset.mapping, map);
+  assert.deepEqual(preset.date_order, { created_at: "day_first" });
+  // Column names only. No values, no row counts, no file slots, no UI state.
+  const blob = JSON.stringify(preset);
+  assert.deepEqual(Object.keys(preset).sort(),
+    ["date_order", "mapping", "rules", "support_signal_mapping"]);
+  for (const row of SF.rows)
+    for (const v of Object.values(row))
+      assert.ok(!(String(v).length > 12 && blob.includes(String(v))), "a value reached the preset");
+});
+
+test("a preset round-trips onto the same export", () => {
+  const { map } = mapColumns({ headers: SF.headers, rules, records: SF.rows });
+  const preset = buildMappingPreset({ map, rules });
+  const res = applyMappingPreset({ preset: JSON.parse(JSON.stringify(preset)), headers: SF.headers, rules });
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.mapping, map);
+  assert.deepEqual(res.missing, []);
+  assert.deepEqual(res.problems, []);
+});
+
+// The case a prototype skips.
+test("a preset naming columns this export lacks says which, rather than dropping them", () => {
+  const preset = buildMappingPreset({
+    map: { case_id: "CaseNumber", reason: "A Column That Went Away", status: "Status" }, rules });
+  const res = applyMappingPreset({ preset, headers: SF.headers, rules });
+  assert.equal(res.ok, true);
+  assert.equal(res.mapping.case_id, "CaseNumber");
+  assert.equal(res.mapping.reason, undefined, "not mapped to a column that isn't there");
+  assert.deepEqual(res.missing.map((m) => m.column), ["A Column That Went Away"]);
+  assert.equal(res.missing[0].label, rules.fields.reason.label, "named by field, for the reader");
+});
+
+test("a preset cannot map two fields to one column", () => {
+  const preset = { support_signal_mapping: PRESET_FORMAT, rules: rules.meta.version,
+    mapping: { created_at: "CreatedDate", closed_at: "CreatedDate" } };
+  const res = applyMappingPreset({ preset, headers: SF.headers, rules });
+  assert.equal(res.mapping.created_at, "CreatedDate");
+  assert.equal(res.mapping.closed_at, undefined, "reading one column as both would corrupt every duration");
+  assert.ok(res.problems.some((t) => /named twice/.test(t)));
+});
+
+test("a field this version does not have is ignored and reported", () => {
+  const preset = { support_signal_mapping: PRESET_FORMAT, rules: "0.1.0",
+    mapping: { case_id: "CaseNumber", retired_field: "Status" } };
+  const res = applyMappingPreset({ preset, headers: SF.headers, rules });
+  assert.deepEqual(res.unknown, ["retired_field"]);
+  assert.ok(res.problems.some((t) => /not part of this version/.test(t)));
+  assert.equal(res.stale_rules, "0.1.0", "and says it was saved against an older ruleset");
+});
+
+for (const [label, bad] of [
+  ["not an object", "just a string"],
+  ["an array", [1, 2, 3]],
+  ["null", null],
+  ["another tool's file", { version: 2, columns: {} }],
+  ["a newer format", { support_signal_mapping: PRESET_FORMAT + 1, mapping: {} }],
+  ["no mapping at all", { support_signal_mapping: PRESET_FORMAT }],
+]) {
+  test(`${label} is refused with a reason, not applied`, () => {
+    const res = applyMappingPreset({ preset: bad, headers: SF.headers, rules });
+    assert.equal(res.ok, false);
+    assert.ok(res.problems.length > 0, "says why");
+    assert.equal(res.mapping, undefined);
+  });
+}
+
+test("a date order only survives for a field the preset actually mapped", () => {
+  const preset = { support_signal_mapping: PRESET_FORMAT, rules: rules.meta.version,
+    mapping: { created_at: "CreatedDate" },
+    date_order: { created_at: "day_first", closed_at: "month_first", nonsense: "day_first" } };
+  const res = applyMappingPreset({ preset, headers: SF.headers, rules });
+  assert.deepEqual(res.date_order, { created_at: "day_first" });
+});
+
+test("a bad date order in a preset is dropped, not trusted", () => {
+  const preset = { support_signal_mapping: PRESET_FORMAT, rules: rules.meta.version,
+    mapping: { created_at: "CreatedDate" }, date_order: { created_at: "sideways" } };
+  assert.deepEqual(applyMappingPreset({ preset, headers: SF.headers, rules }).date_order, {});
+});
+
+// And a preset drives a real run: the whole point is next month's export.
+test("a mapping loaded from a preset produces the same report as mapping by hand", () => {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const byHand = autoMap(headers, rules);
+  const preset = buildMappingPreset({ map: byHand, rules });
+  const res = applyMappingPreset({ preset, headers, rules });
+  const a = runAudit({ records, mapping: byHand, headers, rules });
+  const b = runAudit({ records, mapping: res.mapping, headers, rules });
+  for (const id of Object.keys(a.checks))
+    assert.equal(b.checks[id].outcome, a.checks[id].outcome, id);
 });

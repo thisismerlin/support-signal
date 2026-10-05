@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.9.0";
+export const ENGINE_VERSION = "0.10.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -147,12 +147,19 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
       if (!refused[p.key]) refused[p.key] = { header: p.header, reason: "varies_within_case" };
       continue;
     }
-    // Below an exact or same-words match, a comment field's name match is a partial
-    // word overlap, which is a guess wearing a match's confidence: "CommentCreatedDate"
-    // overlaps comment_id's own name, so a column of dates was filed as an ID and the
-    // comment timestamp went unmapped. A loose match whose values contradict the
-    // field's shape is refused and the column left for a field that fits.
-    if (p.score < TRUSTED_NAME && isCommentField(rules.fields[p.key])
+    // Below an exact or same-words match, a name match is a partial word overlap, which
+    // is a guess wearing a match's confidence: "CommentCreatedDate" overlaps comment_id's
+    // own name, so a column of dates was filed as an ID and the comment timestamp went
+    // unmapped. A loose match whose values contradict the field's shape is refused and
+    // the column left for a field that fits.
+    //
+    // Comment and bot fields, not case fields. The bot half was added after the case
+    // export loaded into the bot slot was mapped wholesale and absurdly --
+    // bot_claimed_resolved onto a prose resolution note, so truthy() read every
+    // conversation as not claimed and the audit had nothing to audit. Case fields are
+    // deliberately out: the failure has not been seen there, and contradictsShape is
+    // weak by design rather than safe by proof.
+    if (p.score < TRUSTED_NAME && gatedByShape(rules.fields[p.key])
         && contradictsShape(rules.fields[p.key].shape, profiles.get(p.header))) {
       if (!refused[p.key]) refused[p.key] = { header: p.header, reason: "shape_mismatch" };
       continue;
@@ -183,6 +190,9 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
 // Case-level means: not a comment field, and not the case ID itself. The ID is the key
 // the rows are grouped by, so it cannot be judged on whether it varies within a group.
 const isCaseLevelField = (f, key) => key !== "case_id" && (f.level || "case") !== "comment";
+// Which fields a loose name match is checked against the values for. A bot field is as
+// much a per-row field as a comment one, and as easily handed the wrong column.
+const gatedByShape = (f) => isCommentField(f) || (f.file || "case") === "bot";
 
 // Which headers change between rows of the same case, and whether this export is one
 // row per comment at all. Blanks are ignored: a repeated case field blanked on all but
@@ -333,6 +343,74 @@ function inferFromValues({ fields, headers, records, map, usedHeader, varying, r
 // Backwards compatible: the plain {field: header} map the engine and the page use.
 export function autoMap(headers, rules, scope = "case") {
   return mapColumns({ headers, rules, scope }).map;
+}
+
+// ---------- mapping presets ----------
+// Checking the same export monthly meant re-doing the whole mapping each time, and
+// every correction made last month was lost: the column the matcher guessed wrong, the
+// one it refused, the free-text column moved to resolution note, the date order chosen
+// by hand. A preset carries those decisions and nothing else.
+//
+// Column names only. No values, so the echo rules do not apply -- but a header can
+// itself be revealing, and a preset is a file people pass around, so the page says what
+// it holds. It is a file rather than browser storage on purpose: the page persists
+// nothing, which is half of why its promise is simple to state, and a file also travels
+// between machines and colleagues.
+export const PRESET_FORMAT = 1;
+
+// What a preset holds: how to read this export's columns, and nothing about the UI.
+// Not the bot or history file slots, not the drivers toggle -- a preset that restores
+// half the page is hard to reason about when it goes wrong.
+export function buildMappingPreset({ map, date_order = {}, rules, name = null }) {
+  const fields = Object.keys(rules.fields);
+  const mapping = {};
+  for (const k of fields) if (map && map[k]) mapping[k] = map[k];
+  const order = {};
+  for (const [k, v] of Object.entries(date_order)) {
+    if (fields.includes(k) && DATE_ORDERS.includes(v)) order[k] = v;
+  }
+  return {
+    support_signal_mapping: PRESET_FORMAT,
+    rules: rules.meta.version,
+    ...(name ? { name } : {}),
+    mapping,
+    ...(Object.keys(order).length ? { date_order: order } : {}),
+  };
+}
+
+// Applying one to an export that may have moved on since. The interesting case, and the
+// one a prototype skips: a preset naming columns this file does not have must say which,
+// rather than silently dropping them and leaving the reader to notice the gap.
+export function applyMappingPreset({ preset, headers, rules }) {
+  const problems = [];
+  if (!preset || typeof preset !== "object" || Array.isArray(preset))
+    return { ok: false, problems: ["That file is not a mapping preset."] };
+  if (preset.support_signal_mapping !== PRESET_FORMAT)
+    return { ok: false, problems: ["That file is not a Support Signal mapping preset, or it was saved by a different version."] };
+  if (!preset.mapping || typeof preset.mapping !== "object")
+    return { ok: false, problems: ["That preset carries no column mapping."] };
+
+  const have = new Set(headers);
+  const mapping = {}, missing = [], unknown = [], taken = new Map();
+  for (const [field, col] of Object.entries(preset.mapping)) {
+    if (!rules.fields[field]) { unknown.push(field); continue; }
+    if (!have.has(col)) { missing.push({ field, label: rules.fields[field].label, column: col }); continue; }
+    // One column, one field, by hand or by preset: reading the same column as both
+    // created and closed would quietly corrupt every duration.
+    if (taken.has(col)) { problems.push(`“${col}” is named twice in the preset; the first use was kept.`); continue; }
+    taken.set(col, field);
+    mapping[field] = col;
+  }
+  const date_order = {};
+  for (const [field, v] of Object.entries(preset.date_order || {})) {
+    if (rules.fields[field] && DATE_ORDERS.includes(v) && mapping[field]) date_order[field] = v;
+  }
+  if (unknown.length) problems.push(`${plural(unknown.length, "field")} in the preset ${unknown.length === 1 ? "is" : "are"} not part of this version and ${unknown.length === 1 ? "was" : "were"} ignored.`);
+  // A preset that fits is still not automatically right: the export may have been
+  // re-cut since. Said once, where the preset is applied.
+  return { ok: true, mapping, date_order, applied: Object.keys(mapping).length,
+    missing, unknown, problems,
+    stale_rules: preset.rules && String(preset.rules) !== String(rules.meta.version) ? String(preset.rules) : null };
 }
 
 // ---------- helpers ----------
@@ -879,8 +957,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   };
   // Only the floor that failed. Both can, and often do, but naming both when one was
   // met tells the reader the wrong thing about their data.
-  const floorWanted = (e) => (e.shortCount && e.shortShare ? `${e.minN} cases and ${pct(e.minS, 0)}`
-    : e.shortCount ? `${e.minN} cases` : `${pct(e.minS, 0)} of cases`);
+  const floorWanted = (e) => (e.shortCount && e.shortShare ? `${plural(e.minN, "case")} and ${pct(e.minS, 0)}`
+    : e.shortCount ? plural(e.minN, "case") : `${pct(e.minS, 0)} of cases`);
   // The free-text verdict, built from the rules' own template. Only counts and names
   // are substituted; nothing out of the export goes in, which is why this is safe to
   // print about a column it is refusing to quote.
@@ -1180,7 +1258,16 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       if (nearDuplicate(names[a], names[b])) nearDups.push([names[a], names[b]]);
     const rare = realReasons.filter(([, k]) => k < 5).length;
     const tail = realReasons.length ? rare / realReasons.length : 0;
-    const outcome = nearDups.length === 0 && tail < 0.2 ? "pass" : nearDups.length <= 3 ? "warn" : "fail";
+    // Sprawl from both ends. The two tests above look only at the thin end -- names that
+    // nearly match, and codes barely used -- so a taxonomy of 400 codes used about
+    // thirteen times each scored zero on both and passed green. A rate rather than a
+    // count, because 400 codes over half a million cases is a taxonomy and 400 over
+    // five thousand is not.
+    const perK = u ? (realReasons.length / u) * 1000 : 0;
+    const sprawl = evalThreshold(perK, checkDef.B3.sprawl_threshold);
+    const pairsVerdict = nearDups.length === 0 && tail < 0.2 ? "pass" : nearDups.length <= 3 ? "warn" : "fail";
+    const sev = { pass: 0, warn: 1, fail: 2 };
+    const outcome = sev[sprawl] > sev[pairsVerdict] ? sprawl : pairsVerdict;
     // Both the sentence and the `pairs` extra are capped. The extra mattered most: it
     // was raw, uncapped, and invisible in the page, so it reached the clipboard
     // without ever being seen on screen.
@@ -1189,9 +1276,14 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const pairText = shown.length
       ? `Near-duplicates: ${shown.map(([x, y]) => `\u201c${x}\u201d / \u201c${y}\u201d`).join(", ")}${nearDups.length > shown.length ? `, and ${nearDups.length - shown.length} more` : ""}. `
       : nearDups.length ? `${plural(nearDups.length, "near-duplicate pair")} found. ` : "";
-    set("B3", outcome, nearDups.length, `${nearDups.length} pairs`,
-      `${realReasons.length} distinct reasons. ${pairText}${rare} used fewer than 5 times.`,
-      { pairs: shown, pairs_found: nearDups.length });
+    // The rate is named whenever it is what decided the outcome, so a red B3 on a
+    // taxonomy with no near-duplicates says why rather than printing two zeroes.
+    const sprawlText = sev[sprawl] >= sev[pairsVerdict] && sprawl !== "pass"
+      ? ` That is ${perK.toFixed(1)} codes per 1,000 cases, against ${describeThreshold(checkDef.B3.sprawl_threshold, false)}.`
+      : "";
+    set("B3", outcome, nearDups.length, plural(nearDups.length, "pair"),
+      `${plural(realReasons.length, "distinct reason")}. ${pairText}${rare} used fewer than 5 times.${sprawlText}`,
+      { pairs: shown, pairs_found: nearDups.length, reasons: realReasons.length, per_1000_cases: perK });
   } else set("B3", "not_in_export", null, "No reason", "No contact reason column.");
 
   // B4. Held back on an unclear order rather than run: with the dates unread every
@@ -1667,7 +1759,7 @@ function computeSignal(s, ctx) {
     const hit = withO.filter((c) => c._days > P.slow_days && c._owners >= P.min_owners);
     const byGroup = groupShare(withO, (c) => c.group || "(none)", (c) => c._days > P.slow_days && c._owners >= P.min_owners);
     out.headline = `${pct(hit.length / Math.max(1, withO.length), 1)} of closed cases`;
-    out.detail = `${hit.length} cases open more than ${P.slow_days} days with ${P.min_owners}+ owners.`;
+    out.detail = `${plural(hit.length, "case")} open more than ${P.slow_days} days with ${P.min_owners}+ owners.`;
     out.rows = ctx.rowsOf("group", byGroup.slice(0, 4), (g) => [g.key, pct(g.share, 1), plural(g.n, "case")]);
   } else if (s.id === "handoff") {
     const held = closed.filter((c) => c._owners === 1), handed = closed.filter((c) => c._owners > 1);
@@ -1707,13 +1799,23 @@ function computeSignal(s, ctx) {
     const end = Math.max(...U.map((c) => c._created).filter((x) => x != null));
     const open = U.filter((c) => !c._isClosed && c._created != null);
     const old = open.filter((c) => (end - c._created) / DAY > p70);
-    out.headline = `${old.length} of ${open.length} open cases`;
+    out.headline = `${old.length.toLocaleString()} of ${plural(open.length, "open case")}`;
     out.detail = `Open longer than ${p70?.toFixed(1)} days, the time 70% of closed cases took.`;
     out.rows = ctx.rowsOf("group", groupShare(old, (c) => c.group || "(none)", () => true).slice(0, 4), (g) => [g.key, plural(g.n, "case"), ""]);
   } else if (s.id === "exit_events") {
     const ev = U.filter((c) => real(c.exit_event));
-    out.headline = `${new Set(ev.map((c) => c.account_id)).size} accounts`;
-    out.detail = `${ev.length} cases record an exit event.`;
+    const accounts = new Set(ev.map((c) => c.account_id)).size;
+    // "3 accounts" invites a reader to treat three events as a finding, and the audience
+    // for this one is whoever owns retention, which is where a thin number does damage.
+    // Its own count, not the evidence floor: exit events are rare by nature and the
+    // floor's share test would reject a real signal.
+    if (accounts < (P.min_accounts ?? 0)) {
+      return { ...out, state: "too_few", headline: undefined,
+        reason: `${plural(accounts, "account")} ${accounts === 1 ? "records" : "record"} an exit event, below the ${P.min_accounts} needed to report them. ${plural(ev.length, "case")} in total.` };
+    }
+    // Pluralised through the engine's own helper. It read "1 accounts" and "1 cases".
+    out.headline = plural(accounts, "account");
+    out.detail = `${plural(ev.length, "case")} ${ev.length === 1 ? "records" : "record"} an exit event.`;
     out.rows = [];
   } else if (s.id === "self_help" || s.id === "keep_human") {
     const by = new Map();
@@ -1722,12 +1824,12 @@ function computeSignal(s, ctx) {
     const stats = [...by].map(([k, a]) => ({ k, n: a.length, med: median(a.map((c) => c._days)), owners: a.filter((c) => c._owners != null).length ? a.filter((c) => c._owners != null).reduce((p, c) => p + c._owners, 0) / a.filter((c) => c._owners != null).length : null, doc: a.filter((c) => real(c.resolution_note) || real(c.linked_article)).length / a.length }));
     if (s.id === "self_help") {
       const list = stats.filter((x) => x.n / total >= 0.02 && x.med <= 1.5 && (x.owners == null || x.owners < 1.4)).sort((a, b) => b.n - a.n);
-      out.headline = `${list.length} candidate reasons`;
+      out.headline = plural(list.length, "candidate reason");
       out.detail = "Frequent, resolved within a day and a half, mostly by one owner.";
       out.rows = ctx.rowsOf("reason", list.slice(0, 5), (x) => [x.k, plural(x.n, "case"), `${pct(x.doc)} documented`]);
     } else {
       const list = stats.filter((x) => x.n >= 30 && (x.med > 5 || (x.owners != null && x.owners >= 2))).sort((a, b) => b.med - a.med);
-      out.headline = `${list.length} reasons`;
+      out.headline = plural(list.length, "reason");
       out.detail = "Long to resolve or usually passed between owners.";
       out.rows = ctx.rowsOf("reason", list.slice(0, 5), (x) => [x.k, `${x.med.toFixed(1)} days`, x.owners != null ? `${x.owners.toFixed(1)} owners` : ""]);
     }
