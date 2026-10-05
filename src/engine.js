@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.7.0";
+export const ENGINE_VERSION = "0.8.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -239,17 +239,10 @@ function varyingWithinCase({ headers, records, rules, scope }) {
 // guess, and an ambiguous column is left alone — a visible gap beats a quiet mistake.
 const SAMPLE = 300;
 
-// parseDate() ends in Date.parse(), which is lenient enough to read "CASE-42" as the
-// year 2042 and "ACC-0637" as 637. That is fine when a column is already known to hold
-// dates; it is useless for deciding whether it does. Inference asks for a date shape
-// first, and only then whether it parses.
-const DATE_SHAPES = [
-  /^\d{4}-\d{2}-\d{2}([ T]|$)/,              // 2026-03-12, ISO
-  /^\d{1,2}[\/.]\d{1,2}[\/.]\d{4}($|[ ,])/,   // 12/03/2026, 12.03.2026
-  /^\d{1,2} [A-Za-z]{3,} \d{4}($|[ ,])/,      // 12 March 2026
-  /^[A-Za-z]{3,} \d{1,2},? \d{4}($|[ ,])/,    // March 12, 2026
-];
-const isDateLike = (v) => DATE_SHAPES.some((re) => re.test(v)) && parseDate(v) != null;
+// Inference runs before any column's date order is known, so it asks whether either
+// order would read the value. parseDate no longer ends in Date.parse, so "CASE-42" and
+// "ACC-0637" are rejected by the patterns themselves rather than by a second guard.
+const isDateLike = (v) => looksLikeDate(v);
 
 function profileColumn(records, header) {
   const vals = [];
@@ -343,16 +336,100 @@ export function autoMap(headers, rules, scope = "case") {
 }
 
 // ---------- helpers ----------
-export function parseDate(v) {
+// A calendar date, or nothing. Date.UTC rolls a bad field into the next year rather
+// than refusing it -- Date.UTC(2026, 24, 3) is January 2028 -- so every field is
+// checked against the real calendar first and an impossible date returns null.
+const DAYS_IN = (y, m) => [31, (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28,
+  31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+const utc = (y, mo, d, h = 0, mi = 0, se = 0) => {
+  if (!(y >= 1000 && y <= 9999) || !(mo >= 1 && mo <= 12)) return null;
+  if (!(d >= 1 && d <= DAYS_IN(y, mo))) return null;
+  if (!(h <= 23 && mi <= 59 && se <= 59)) return null;
+  return Date.UTC(y, mo - 1, d, h, mi, se);
+};
+
+// Three numbers and a separator, with no year to anchor them: 03/12/2026 is the third
+// of December or the twelfth of March, and nothing in the value says which. The order
+// is decided once per column by dateOrderOf() below and passed in here. Without one
+// this returns null rather than guessing, because a default here is a guess with the
+// authority of a parsed date -- which is how a US export was read with its days and
+// months swapped and nothing reported it.
+//
+// One pattern for all three separators, with the pair required to match, so 12/03/2026,
+// 12.03.2026 and 12-03-2026 are the same date read the same way. They were not: the
+// slash form took a day-first branch, the dotted form fell through to Date.parse and
+// came out month-first, and a dotted European date above the 12th parsed to null.
+const ISO_FORM = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
+const NUM_FORM = /^(\d{1,2})([\/.\-])(\d{1,2})\2(\d{4})(?:[ T,]\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
+const NAMED_FORMS = [
+  // 12 March 2026
+  { re: /^(\d{1,2}) ([A-Za-z]{3,})\.? (\d{4})/, pick: (m) => [m[3], m[2], m[1]] },
+  // March 12, 2026
+  { re: /^([A-Za-z]{3,})\.? (\d{1,2}),? (\d{4})/, pick: (m) => [m[3], m[1], m[2]] },
+];
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const monthByName = (w) => MONTHS.indexOf(String(w).slice(0, 3).toLowerCase()) + 1;
+
+export const DATE_ORDERS = ["day_first", "month_first"];
+
+export function parseDate(v, order = null) {
   if (v == null) return null;
   const s = String(v).trim();
   if (!s) return null;
-  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/);
-  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
-  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
-  if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1], +(m[4] || 0), +(m[5] || 0));
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? null : t;
+  let m = s.match(ISO_FORM);
+  if (m) return utc(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  for (const f of NAMED_FORMS) {
+    m = s.match(f.re);
+    if (!m) continue;
+    const [y, mon, d] = f.pick(m);
+    const mo = monthByName(mon);
+    return mo ? utc(+y, mo, +d) : null;
+  }
+  m = s.match(NUM_FORM);
+  if (m) {
+    if (!DATE_ORDERS.includes(order)) return null;   // never guess
+    const a = +m[1], b = +m[3];
+    const [d, mo] = order === "day_first" ? [a, b] : [b, a];
+    return utc(+m[4], mo, d, +(m[5] || 0), +(m[6] || 0), +(m[7] || 0));
+  }
+  return null;
+}
+
+// Is this a date at all? Used by column inference, which runs before any order is
+// known, so an ambiguous value counts if either order would read it.
+export function looksLikeDate(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return false;
+  if (ISO_FORM.test(s) || NAMED_FORMS.some((f) => f.re.test(s))) return parseDate(s) != null;
+  if (!NUM_FORM.test(s)) return false;
+  return DATE_ORDERS.some((o) => parseDate(s, o) != null);
+}
+
+// The order for one column, from all of its values rather than any single one.
+//   a value with a first number above 12   -> the first number is the day
+//   a value with a second number above 12  -> the second number is the day
+//   both                                   -> two formats in one column, or corrupt
+//   neither, but ambiguous values present  -> nothing settles it; do not guess
+//   no ambiguous values at all             -> null: ISO and named months say which is which
+export function dateOrderOf(values) {
+  let firstOver12 = 0, secondOver12 = 0, ambiguous = 0, examined = 0;
+  for (const v of values) {
+    const m = String(v ?? "").trim().match(NUM_FORM);
+    if (!m) continue;
+    examined++;
+    const a = +m[1], b = +m[3];
+    if (a > 12 && b > 12) continue;              // neither reading works; a bad value
+    if (a > 12) firstOver12++;
+    else if (b > 12) secondOver12++;
+    else ambiguous++;
+  }
+  if (!examined) return { order: null, basis: "unambiguous", examined, settled_by: 0, ambiguous: 0 };
+  if (firstOver12 && secondOver12)
+    return { order: null, basis: "mixed", examined, settled_by: firstOver12 + secondOver12, ambiguous,
+      day_first_values: firstOver12, month_first_values: secondOver12 };
+  if (firstOver12) return { order: "day_first", basis: "settled", examined, settled_by: firstOver12, ambiguous };
+  if (secondOver12) return { order: "month_first", basis: "settled", examined, settled_by: secondOver12, ambiguous };
+  return { order: null, basis: "ambiguous", examined, settled_by: 0, ambiguous };
 }
 const DAY = 86400000;
 const MINUTE = 60000;
@@ -430,7 +507,32 @@ function agree(rows, read) {
   return { value: vals[0], conflict: distinct.size > 1, distinct: [...distinct] };
 }
 
-export function collapseRows({ records, headers = null, map, rules }) {
+// The date fields the engine parses, so one list decides what gets an order. Driven by
+// the declared shape rather than a hand-kept list, or a new date field would silently
+// go back to being parsed without one.
+export const dateFieldsOf = (rules, scope = "case") => Object.keys(rules.fields)
+  .filter((k) => rules.fields[k].shape === "date"
+    && ((rules.fields[k].file || "case") === scope || (rules.fields[k].file || "case") === "both"));
+
+// One order per mapped date column, decided from that column's own values. A caller's
+// choice wins: an ambiguous column is the user's to settle, and the mapping table asks.
+export function dateOrders({ records, map, rules, scope = "case", chosen = {} }) {
+  const out = {};
+  for (const k of dateFieldsOf(rules, scope)) {
+    const col = map[k];
+    if (!col) continue;
+    const found = dateOrderOf(records.map((r) => r[col]));
+    out[k] = DATE_ORDERS.includes(chosen[k])
+      ? { ...found, order: chosen[k], basis: "chosen" }
+      : found;
+  }
+  return out;
+}
+// The order for one field, or null. Written so a missing entry reads the same as an
+// unresolved one: both mean "do not guess".
+const orderFor = (orders, k) => (orders && orders[k] && orders[k].order) || null;
+
+export function collapseRows({ records, headers = null, map, rules, orders = {} }) {
   const ph = new Set(rules.placeholders.map((p) => p.toLowerCase()));
   const get = (r, k) => (map[k] ? String(r[map[k]] ?? "").trim() : undefined);
   const real = (v) => v !== undefined && !ph.has(String(v).trim().toLowerCase());
@@ -486,9 +588,10 @@ export function collapseRows({ records, headers = null, map, rules }) {
     // Every row of the case is a comment when the export carries comment columns.
     c._comments = commentKeys.length ? kept.map((r) => {
       const at = get(r, "comment_at");
+      const commentOrder = orderFor(orders, "comment_at");
       return {
         id: get(r, "comment_id") || "",
-        at: at || "", _at: parseDate(at),
+        at: at || "", _at: parseDate(at, commentOrder),
         body: get(r, "comment_body") || "",
         author: get(r, "comment_author") || "",
         author_type: get(r, "comment_author_type") || "",
@@ -514,7 +617,7 @@ export function collapseRows({ records, headers = null, map, rules }) {
     field, label: rules.fields[field].label, cases: n,
   })).sort((a, b) => b.cases - a.cases || a.field.localeCompare(b.field));
 
-  return { cases, real, ph, shape, rows: records.length, duplicate_rows: duplicateRows,
+  return { cases, real, ph, shape, date_order: orders, rows: records.length, duplicate_rows: duplicateRows,
     comment_rows: commentRows, multi_row_cases: multiRowCases, no_id_rows: noIdRows,
     conflicts, conflict_cases: conflictCases,
     case_level_fields: caseKeys, comment_fields: commentKeys.filter((k) => map[k]) };
@@ -522,9 +625,9 @@ export function collapseRows({ records, headers = null, map, rules }) {
 
 // Per-case values the checks and signals read. Derived after collapsing, so a case
 // built from twenty comment rows is indistinguishable here from one built from one.
-function deriveCase(c, { map, real }) {
-  c._created = parseDate(c.created_at);
-  c._closed = parseDate(c.closed_at);
+function deriveCase(c, { map, real, orders = {} }) {
+  c._created = parseDate(c.created_at, orderFor(orders, "created_at"));
+  c._closed = parseDate(c.closed_at, orderFor(orders, "closed_at"));
   c._isClosed = c.status !== undefined ? isClosedStatus(c.status) : c._closed != null;
   c._days = c._created != null && c._closed != null ? (c._closed - c._created) / DAY : null;
   c._owners = c.owner_changes !== undefined && c.owner_changes !== "" ? Number(c.owner_changes) : null;
@@ -548,7 +651,7 @@ function deriveCase(c, { map, real }) {
       c._lastUpdateFrom = pub.length ? "latest_public_comment" : "latest_comment";
     }
   }
-  c._lastUpdate = parseDate(c.last_update_at);
+  c._lastUpdate = parseDate(c.last_update_at, orderFor(orders, "last_update_at"));
   return c;
 }
 
@@ -584,6 +687,10 @@ function summariseLoad(L, U, rules) {
   }
   return {
     shape: L.shape,
+    // The order each date column was read in, and how that was decided. A duration is
+    // only as trustworthy as the reading of the dates behind it, so the reading is
+    // reported next to the counts rather than left implicit.
+    date_order: L.date_order || {},
     rows: L.rows, cases: U.length,
     duplicate_rows: L.duplicate_rows,
     comment_rows: L.comment_rows,
@@ -604,9 +711,13 @@ function summariseLoad(L, U, rules) {
 
 // The same summary, without running a single check. The page shows this beside the
 // file picker so what was read is said before anything is judged.
-export function readSummary({ records, headers = null, map, rules }) {
-  const L = collapseRows({ records, headers, map, rules });
-  const U = L.cases.map((c) => deriveCase(c, { map, real: L.real }));
+export function readSummary({ records, headers = null, map, rules, date_order = {} }) {
+  // The same orders runAudit decides, decided the same way, because this box is shown
+  // before the checks run and has to say what the run will do rather than something
+  // close to it. A test asserts the two summaries match field for field.
+  const orders = dateOrders({ records, map, rules, scope: "case", chosen: date_order });
+  const L = collapseRows({ records, headers, map, rules, orders });
+  const U = L.cases.map((c) => deriveCase(c, { map, real: L.real, orders }));
   return summariseLoad(L, U, rules);
 }
 
@@ -649,12 +760,18 @@ const cautionsFor = (active, reads) =>
   (!reads || !reads.length) ? [] : active.filter((c) => c.reads.some((t) => reads.includes(t)));
 
 // ---------- the audit ----------
-export function runAudit({ records, mapping, headers = null, history = null, bot = null, rules, source = "upload" }) {
+export function runAudit({ records, mapping, headers = null, history = null, bot = null, rules,
+  source = "upload", date_order = {} }) {
   const map = mapping;
+  // Before anything is parsed: one date order per mapped date column, decided from that
+  // column's values. 03/12/2026 is the third of December or the twelfth of March and the
+  // value cannot say which, so the column says, or nobody does. `date_order` carries the
+  // user's choice from the mapping table and wins over what was detected.
+  const orders = dateOrders({ records, map, rules, scope: "case", chosen: date_order });
   // Collapse first. Every check below sees one row per case, whatever shape arrived.
-  const L = collapseRows({ records, headers, map, rules });
+  const L = collapseRows({ records, headers, map, rules, orders });
   const real = L.real;
-  const U = L.cases.map((c) => deriveCase(c, { map, real }));
+  const U = L.cases.map((c) => deriveCase(c, { map, real, orders }));
   const n = L.rows;        // rows read from the file
   const u = U.length;      // distinct cases after collapsing
 
@@ -702,6 +819,30 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     .replace("{distinct}", e.distinct.toLocaleString())
     .replace("{cases}", e.n.toLocaleString())
     .replace("{words}", e.avgWords.toFixed(1));
+  // A declared date field whose column could be read either way. Only "ambiguous" and
+  // "mixed" hold anything back: an ISO column has no order to settle, and a settled one
+  // has been settled, so both read as resolved.
+  const DO = rules.date_order || {};
+  const unresolvedDate = (def) => {
+    for (const k of def.requires_dates || []) {
+      const o = orders[k];
+      if (o && (o.basis === "ambiguous" || o.basis === "mixed")) return { field: k, ...o };
+    }
+    return null;
+  };
+  const dateWords = (key, e) => String(DO[key] || "")
+    .replace("{field}", rules.fields[e.field].label)
+    .replace("{column}", map[e.field] || "the comment rows")
+    .replace("{examined}", e.examined.toLocaleString())
+    .replace("{ambiguous}", e.ambiguous.toLocaleString());
+  // One call per check, so the branch below reads the same at every site.
+  const dateHold = (id) => {
+    const e = unresolvedDate(checkDef[id]);
+    if (!e) return null;
+    return { e, outcome: "ambiguous_dates", display: e.basis === "mixed" ? "Two formats" : "Order unclear",
+      detail: dateWords(e.basis, e),
+      extra: { title_text: dateWords(e.basis === "mixed" ? "mixed_title" : "title", e), ambiguous_date_field: e.field } };
+  };
   // The first field a check or signal declares is a category but isn't.
   const notCategory = (def) => {
     for (const k of def.requires_category || []) { const e = freeText(k); if (e) return e; }
@@ -839,13 +980,15 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   if (history && history.length) {
     const byCase = new Map();
     let earliest = Infinity;
+    // The change log is a separate file with its own column, so it gets its own order.
+    const histOrder = dateOrderOf(history.map((h) => h.changed_at));
     for (const h of history) {
-      const t = parseDate(h.changed_at);
+      const t = parseDate(h.changed_at, histOrder.order);
       if (t != null && t < earliest) earliest = t;
       if (!byCase.has(h.case_id)) byCase.set(h.case_id, []);
       byCase.get(h.case_id).push(h);
     }
-    hist = { byCase, earliest };
+    hist = { byCase, earliest, order: histOrder };
     for (const c of U) {
       const ev = byCase.get(c.case_id) || [];
       const ownerMoves = ev.filter((e) => /owner|assignee/i.test(e.field)).length;
@@ -867,7 +1010,9 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   else set("C2", "not_in_export", 0, "Snapshot", "Each case appears only in its final state. Transfers, reopens and time spent with each team can't be seen.");
 
   // C3
-  if (!hist) set("C3", "not_in_export", null, "No history", "No change log to measure.");
+  const c3Dates = dateHold("C3");
+  if (c3Dates) set("C3", c3Dates.outcome, null, c3Dates.display, c3Dates.detail, c3Dates.extra);
+  else if (!hist) set("C3", "not_in_export", null, "No history", "No change log to measure.");
   else {
     const covered = U.filter((c) => c._created != null && c._created >= hist.earliest).length / u;
     const start = new Date(hist.earliest).toISOString().slice(0, 10);
@@ -970,11 +1115,17 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       { pairs: shown, pairs_found: nearDups.length });
   } else set("B3", "not_in_export", null, "No reason", "No contact reason column.");
 
-  // B4
-  const bad = U.filter((c) => (c._created != null && c._closed != null && c._closed < c._created) ||
-    (has("status") && c._isClosed && c._closed == null) || (has("status") && !c._isClosed && c._closed != null)).length;
-  const badShare = u ? bad / u : 0;
-  set("B4", evalThreshold(badShare, checkDef.B4.threshold), badShare, pct(badShare, 1), `${bad} cases with impossible or contradictory dates.`);
+  // B4. Held back on an unclear order rather than run: with the dates unread every
+  // closed case looks as if it has no closing date, and B4 would report the whole
+  // column as impossible when the fault is that nobody has said how to read it.
+  const b4Dates = dateHold("B4");
+  if (b4Dates) set("B4", b4Dates.outcome, null, b4Dates.display, b4Dates.detail, b4Dates.extra);
+  else {
+    const bad = U.filter((c) => (c._created != null && c._closed != null && c._closed < c._created) ||
+      (has("status") && c._isClosed && c._closed == null) || (has("status") && !c._isClosed && c._closed != null)).length;
+    const badShare = u ? bad / u : 0;
+    set("B4", evalThreshold(badShare, checkDef.B4.threshold), badShare, pct(badShare, 1), `${bad} cases with impossible or contradictory dates.`);
+  }
 
   // B5
   set("B5", fill("wait_time") > 0.5 ? "pass" : "needs_human", fill("wait_time"), fill("wait_time") > 0.5 ? "Wait field" : "No wait field",
@@ -1101,7 +1252,9 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const months = dates.length ? Math.max(1, (Math.max(...dates) - Math.min(...dates)) / (30.44 * DAY)) : 1;
   const ec = has("channel") ? U.filter((c) => /mail|chat/i.test(c.channel || "")).length : u;
   const perMonth = ec / months;
-  set("AI6", u >= 20000 && perMonth >= 2000 ? "pass" : "warn", u, `${u.toLocaleString()} cases`,
+  const ai6Dates = dateHold("AI6");
+  if (ai6Dates) set("AI6", ai6Dates.outcome, null, ai6Dates.display, ai6Dates.detail, ai6Dates.extra);
+  else set("AI6", u >= 20000 && perMonth >= 2000 ? "pass" : "warn", u, `${u.toLocaleString()} cases`,
     `${u.toLocaleString()} cases, about ${Math.round(perMonth).toLocaleString()} email or chat a month. Forethought publishes 20,000+ historical and 2,000+ a month; most vendors publish nothing, so ask.`);
 
   // B11. Judges the bot conversations export, not the case export: can a claimed
@@ -1139,7 +1292,10 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   for (const c of rules.checks) if (!R[c.id]) set(c.id, "needs_human", null, "Not yet", "This engine version doesn't run this check yet.");
 
   // ---------- the resolution audit ----------
-  const resolution_audit = resolutionAudit({ bot, botRows, U, byIdKey: has("case_id"), rules, basis: b11Basis, real });
+  const botOrders = botRows.length && bot.mapping
+    ? dateOrders({ records: botRows, map: bot.mapping, rules, scope: "bot", chosen: date_order })
+    : {};
+  const resolution_audit = resolutionAudit({ bot, botRows, U, byIdKey: has("case_id"), rules, basis: b11Basis, real, orders: botOrders });
 
   // ---------- uses ----------
   // A use may need a file beyond the case export. It still reports its verdict
@@ -1149,7 +1305,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // too_few ranks with needs_human: it holds a use back from green without being a
   // verdict on the export, and it maps to "can't tell yet" below rather than to amber
   // "usable with care", which would be too generous about data nothing can be read from.
-  const rank = { pass: 0, warn: 1, needs_human: 1, too_few: 1, free_text: 1, fail: 2, not_in_export: 2 };
+  const rank = { pass: 0, warn: 1, needs_human: 1, too_few: 1, free_text: 1, ambiguous_dates: 1, fail: 2, not_in_export: 2 };
 
   // A dirty collapse is a fault in named fields, so it holds back only the uses whose
   // numbers come from one of them. A conflict in follow_up_of says nothing about how
@@ -1207,7 +1363,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const req = us.required.map(at);
     const worst = req.reduce((a, b) => (rank[b.outcome] > rank[a.outcome] ? b : a));
     let outcome = worst.outcome === "needs_human" ? "warn"
-      : worst.outcome === "too_few" || worst.outcome === "free_text" ? "needs_human" : worst.outcome;
+      : ["too_few", "free_text", "ambiguous_dates"].includes(worst.outcome) ? "needs_human" : worst.outcome;
     const optBad = us.optional.map(at).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
     // Matching returns by timing alone isn't implemented, so the audit returns
@@ -1233,7 +1389,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // ---------- signals ----------
   const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, belowFloor, shortReason,
-    freeText, freeTextWords, quotable, clip, rowsOf, U, real, rules, hist, cautions }));
+    freeText, freeTextWords, quotable, clip, rowsOf, orders, dateWords, U, real, rules, hist, cautions }));
 
   // ---------- fix first ----------
   const blockCount = {};
@@ -1290,7 +1446,7 @@ export function looksLikeSameFile(records, headers, bot) {
   return true;
 }
 
-function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
+function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real, orders = {} }) {
   const spec = rules.resolution_audit || {};
   const P = spec.params;
   if (!P) return { available: false, reason: "The rules carry no resolution_audit parameters." };
@@ -1330,7 +1486,7 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
       by_conversation.push({ n: by_conversation.length + 1, bucket: "cant_tell", why: null, matched: [] });
       continue;
     }
-    const end = parseDate(bg(r, "bot_ended_at"));
+    const end = parseDate(bg(r, "bot_ended_at"), (orders.bot_ended_at || {}).order || null);
     const intent = bg(r, "bot_intent");
     const themeReadable = real(intent);
     const reopens = Number(bg(r, "bot_reopens"));
@@ -1401,6 +1557,15 @@ function computeSignal(s, ctx) {
     if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
     const e = ctx.belowFloor(f);
     if (e) return { ...base, state: "too_few", reason: ctx.shortReason(f, e) };
+  }
+  // A duration or a quarter computed from dates nobody has said how to read is not a
+  // weaker number, it is a different date. Checked before the content gates: there is
+  // no point asking whether the reasons are thin if the timeline is unread.
+  for (const f of s.requires_dates || []) {
+    const o = (ctx.orders || {})[f];
+    if (o && (o.basis === "ambiguous" || o.basis === "mixed")) {
+      return { ...base, state: "ambiguous_dates", reason: ctx.dateWords(o.basis, { ...o, field: f }) };
+    }
   }
   // Grouping prose produces one group per case. Checked after the floor, so two long
   // values still read "too few to judge" rather than a confident shape diagnosis.

@@ -19,7 +19,7 @@
   const DEMO_BOT = { "demo-snapshot": "demo-bot-snapshot", "demo-history": "demo-bot-history" };
 
   const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, uploadBot: null,
-    mapping: null, confidence: {}, refused: {}, driversOn: false,
+    mapping: null, confidence: {}, refused: {}, dateOrder: {}, driversOn: false,
     required: new Set(Object.entries(RULES.fields).filter(([, f]) => f.required).map(([k]) => k)) };
 
   function runDemo(kind) {
@@ -70,7 +70,7 @@
       // rules ("Not in export", "Needs a human"); these read as answers, not states.
       const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready",
         not_in_export: "Not in this export", needs_human: "Can't tell yet",
-        too_few: "Can't tell yet", free_text: "Can't tell yet" }[u.outcome];
+        too_few: "Can't tell yet", free_text: "Can't tell yet", ambiguous_dates: "Can't tell yet" }[u.outcome];
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>
@@ -93,7 +93,8 @@
       // apart because the answer differs: locked waits on a check, too few waits on
       // the data. Anything with a reason and no headline renders as a reason, so a new
       // state can never fall through to "On" and print an empty headline.
-      const STATE = { locked: "Locked", too_few: "Too few to judge", free_text: "Looks like free text" };
+      const STATE = { locked: "Locked", too_few: "Too few to judge", free_text: "Looks like free text",
+        ambiguous_dates: "Date order unclear" };
       if (STATE[s.state]) return `<article class="sig sig-${s.state}"><p class="sig-state">${STATE[s.state]}</p><h3>${esc(s.title)}</h3><p class="sig-shows">${esc(s.shows)}</p><p class="sig-reason">${esc(s.reason)}</p></article>`;
       const rows = (s.rows || []).map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
       return `<article class="sig sig-${s.state}"><p class="sig-state">${s.state === "caution" ? "On, with care" : "On"}</p><h3>${esc(s.title)}</h3>
@@ -266,7 +267,8 @@
     if (!state.upload) { box.innerHTML = ""; return; }
     // The engine's own summary, so this says exactly what the report will say.
     const L = readSummary({ records: state.upload.records, headers: state.upload.headers,
-      map: state.mapping, rules: RULES });
+      map: state.mapping, rules: RULES, date_order: state.dateOrder });
+    state.read = L;    // renderMapping asks it which date columns need an order
     box.innerHTML = loadBlock(L, { beforeRun: true });
   }
 
@@ -281,6 +283,22 @@
       ? `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>. The case fields repeat on every row, so this export is one row per comment or email, not one row per case. It was collapsed to one row per case before any check ran.</li>`
       : `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>: one row per case${
           L.duplicate_rows ? ", once the repeated rows below are set aside" : ""}.</li>`);
+    // The reading the durations rest on. Said whether or not it needed a choice: a
+    // report that only mentions dates when they go wrong leaves the reader unable to
+    // tell a settled order from one nobody looked at.
+    const ORDER_WORDS = { day_first: "day first (31/01/2026)", month_first: "month first (01/31/2026)" };
+    for (const [field, o] of Object.entries(L.date_order || {})) {
+      if (!o || o.basis === "unambiguous") continue;
+      const label = esc((RULES.fields[field] || {}).label || field);
+      if (o.basis === "settled")
+        bits.push(`<li><strong>${label} dates read ${ORDER_WORDS[o.order]}</strong>, settled by ${n(o.settled_by)} of ${n(o.examined)} values that can only be read that way.</li>`);
+      else if (o.basis === "chosen")
+        bits.push(`<li><strong>${label} dates read ${ORDER_WORDS[o.order]}</strong>, because you chose that order. Nothing in the column settles it.</li>`);
+      else if (o.basis === "mixed")
+        bits.push(`<li><strong>${label} holds two date formats.</strong> Some values are only valid day first and others only month first, so the checks that read dates are held back.</li>`);
+      else
+        bits.push(`<li><strong>${label} dates could be read either way.</strong> All ${n(o.examined)} values work as day first or month first, so the order is yours to choose in the mapping table. Until then the checks that read dates are held back.</li>`);
+    }
     if (L.comments) {
       bits.push(`<li><strong>${n(L.comments)} comments</strong> read across ${n(L.cases_with_comments)} cases${
         per ? `, ${per.median} per case typically (${per.min} to ${per.max})` : ""}.</li>`);
@@ -357,6 +375,21 @@
     return (REFUSAL[r.reason] || REFUSAL.varies_within_case)(r.header);
   }
 
+  // The date orders for the current mapping. Computed on demand rather than read off
+  // the last render: the mapping table drew before "what was read" did, so the picker
+  // the message tells the reader to use was not on the page at all.
+  let orderCache = null, orderKey = "";
+  function dateOrdersNow() {
+    if (!state.upload) return {};
+    const key = JSON.stringify([state.mapping, state.dateOrder]);
+    if (key !== orderKey) {
+      orderKey = key;
+      orderCache = dateOrders({ records: state.upload.records, map: state.mapping, rules: RULES,
+        scope: "case", chosen: state.dateOrder });
+    }
+    return orderCache;
+  }
+
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
     const pii = state.upload.headers.filter((h) => /e-?mail|phone|mobile|name$|first name|last name|address/i.test(h));
@@ -375,7 +408,20 @@
       // jargon until it says it wants the ID of the original case.
       const means = f.means ? ` <span class="map-means">(${esc(f.means)})</span>` : "";
       const unlocks = f.unlocks ? `<span class="map-unlocks">Unlocks ${esc(f.unlocks)}.</span>` : "";
-      return `<tr class="map-${st}"><td>${esc(f.label)}${means}${mark}${unlocks}</td>
+      // A date column nothing settles cannot be read until someone says how. The choice
+      // sits in the row that maps the column, because that is where the reader is
+      // already deciding what the column is.
+      const o = (dateOrdersNow() || {})[k];
+      const needsOrder = o && (o.basis === "ambiguous" || o.basis === "chosen");
+      const picker = needsOrder
+        ? `<div class="map-order"><span>Read these dates</span>
+            <select id="order-${k}" data-order="${k}">
+              <option value=""${state.dateOrder[k] ? "" : " selected"}>choose an order</option>
+              <option value="day_first"${state.dateOrder[k] === "day_first" ? " selected" : ""}>day first — 31/01/2026</option>
+              <option value="month_first"${state.dateOrder[k] === "month_first" ? " selected" : ""}>month first — 01/31/2026</option>
+            </select></div>`
+        : "";
+      return `<tr class="map-${st}"><td>${esc(f.label)}${means}${mark}${unlocks}${picker}</td>
         <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
         <td class="map-note">${esc(mapNote(k))}</td></tr>`;
     }).join("");
@@ -409,12 +455,19 @@
       renderMapping();   // the How column and the alerts have to keep up
       renderRead();      // and so does what was read: the mapping decides what conflicts
     }));
+    $("#mapping").querySelectorAll("select[data-order]").forEach((sel) => sel.addEventListener("change", () => {
+      const k = sel.dataset.order;
+      if (sel.value) state.dateOrder[k] = sel.value; else delete state.dateOrder[k];
+      renderRead();      // the order is part of what was read
+      renderMapping();   // and the picker keeps its selection
+    }));
     $("#run-upload").disabled = false;
   }
   function runUpload() {
     try {
       state.report = runAudit({ records: state.upload.records, mapping: state.mapping, headers: state.upload.headers,
-        history: state.uploadHistory, bot: state.uploadBot, rules: RULES, source: "upload" });
+        history: state.uploadHistory, bot: state.uploadBot, rules: RULES, source: "upload",
+        date_order: state.dateOrder });
       state.driversOn = false; render();
       $("#summary").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     } catch (e) { $("#upload-status").textContent = `Couldn't run the checks: ${e.message}. Check that the required columns are mapped.`; }

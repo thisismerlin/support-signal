@@ -97,7 +97,7 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 0.875rem/1.2 var(--f-body); letter-spacing: -0.01em; white-space: nowrap; }
 .chip::before, .sig-state::before { content: ""; width: 0.74em; height: 0.74em; flex: none; }
 .chip-pass { color: var(--good); } .chip-warn { color: var(--warn); } .chip-fail { color: var(--risk); }
-.chip-not_in_export, .chip-needs_human, .chip-too_few, .chip-free_text { color: var(--na); }
+.chip-not_in_export, .chip-needs_human, .chip-too_few, .chip-free_text, .chip-ambiguous_dates { color: var(--na); }
 .chip-pass::before { background: currentColor; border-radius: 50%; }
 .chip-warn::before { border-radius: 50%; background: linear-gradient(90deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
 .chip-fail::before { background: currentColor; border-radius: 2px; }
@@ -109,6 +109,8 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 /* A dashed square: values are there, in quantity, but they are the wrong kind. Distinct
    in shape from every other state, not only in colour. */
 .chip-free_text::before { border-radius: 2px; border: 1.5px dashed currentColor; }
+/* A half-filled square: the values are readable, but two ways. */
+.chip-ambiguous_dates::before { border-radius: 2px; background: linear-gradient(135deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
 
 /* ---------- summary: the product shot ---------- */
 #report { display: block; }
@@ -172,7 +174,7 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 .sig { background: var(--tile); border-radius: 24px; padding: 28px 28px 30px; display: grid; gap: 6px; align-content: start; min-width: 0; }
 .sig-locked { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
 /* Same treatment as locked: a panel saying why there is no number, not a number. */
-.sig-too_few, .sig-free_text { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+.sig-too_few, .sig-free_text, .sig-ambiguous_dates { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
 .sig-state { display: inline-flex; align-items: center; gap: 8px; font: 600 0.8125rem/1.2 var(--f-body); letter-spacing: -0.005em; color: var(--good); margin-bottom: 10px; }
 .sig-state::before { background: currentColor; border-radius: 50%; }
 .sig-caution .sig-state { color: var(--warn); }
@@ -269,6 +271,9 @@ table.map select { font: inherit; max-width: 100%; padding: 7px 10px; border: 1p
 /* An upload status that is a caution, not a count. */
 .status-warn { color: var(--warn); }
 .map-means { color: var(--muted); font-weight: 400; }
+/* The date-order choice, in the row that maps the column it is about. */
+.map-order { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-top: 8px; font-size: 0.8125rem; color: var(--warn); }
+.map-order select { font: inherit; padding: 4px 8px; border: 1px solid var(--rule); border-radius: 8px; background: var(--tile); color: var(--ink); }
 .map-unlocks { display: block; color: var(--muted); font-size: 0.8125rem; line-height: 1.3; margin-top: 2px; max-width: 46ch; }
 .pii { font-size: 0.9rem; color: var(--warn); }
 .status { font-size: 0.9rem; color: var(--muted); }

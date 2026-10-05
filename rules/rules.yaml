@@ -16,7 +16,7 @@
 # commit SHA, stamped into dist by the deploy workflow -- a commit cannot contain its
 # own SHA, so it is not committed, and an unstamped build says so rather than lying.
 meta:
-  version: 0.10.0
+  version: 0.11.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -26,6 +26,7 @@ meta:
     not_in_export: { label: Not in export, text: The export doesn't contain this. Not a judgement on your system. }
     needs_human: { label: Needs a human, text: Can't be judged automatically. The report says what to look at. }
     too_few: { label: Too few to judge, text: "The column holds some values, but too few to judge anything from. The reason says how many it found." }
+    ambiguous_dates: { label: Date order unclear, text: "A date column could be read day-first or month-first and nothing in it settles which. Choose the order in the mapping table and this can be judged." }
     free_text: { label: Looks like free text, text: "The column mapped to this field holds free text rather than a short repeated label, so it can't be judged as one. The reason says what it found and where the column probably belongs." }
 
 # How much evidence a check or signal needs before it may judge what a field's values
@@ -74,6 +75,20 @@ category_free_text:
   # counts and names are substituted, never a value out of the export.
   title: "{field} looks like free text"
   text: "{field} is mapped to \u201c{column}\u201d, which holds {distinct} distinct values across {cases} cases, averaging {words} words each. A category field needs a short label repeated across many cases, so this can't be judged as one. If the column is an agent's write-up, map it to Resolution note instead, where long text is what's expected."
+
+# 03/12/2026 is the third of December or the twelfth of March. The value cannot say
+# which, so the column does: any value with a number above 12 in one position settles
+# the order for the whole column. Where nothing settles it, the order is not guessed --
+# it was, day-first and silently, which read every US-ordered export with its days and
+# months swapped and reported nothing.
+#
+# Wording for the two unresolved cases. {field} {column} {examined} {ambiguous} are
+# substituted by the engine; counts and names only, never a value from the export.
+date_order:
+  title: "{field} date order is unclear"
+  mixed_title: "{field} holds two date formats"
+  ambiguous: "{field} is mapped to \u201c{column}\u201d, whose dates are written as three numbers with no month name and no four-digit year first. Every one of the {examined} values read could be either day-first or month-first, so nothing in the column settles it. Choose the order in the mapping table and the checks that read dates will run."
+  mixed: "{field} is mapped to \u201c{column}\u201d, which holds both orders: some values are only valid read day-first and others only month-first. That is two date formats in one column rather than one order to choose, so it needs fixing in the export before these dates can be read."
 
 placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"]
 junk_text: ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"]
@@ -252,6 +267,7 @@ checks:
   - id: C3
     band: C
     dimension: timeliness
+    requires_dates: [created_at]   # reads the dates themselves, not just whether the column is there
     reads_fields: [created_at]
     title: History covers the period analysed
     failure_title: History is shorter than the period analysed
@@ -348,6 +364,7 @@ checks:
   - id: B4
     band: B
     dimension: consistency
+    requires_dates: [created_at, closed_at]   # reads the dates themselves, not just whether the column is there
     reads_fields: [created_at, closed_at, status]
     title: Dates make sense
     failure_title: Impossible dates found
@@ -501,6 +518,7 @@ checks:
   - id: AI6
     band: A
     dimension: fit for use
+    requires_dates: [created_at]   # reads the dates themselves, not just whether the column is there
     reads_fields: [created_at, channel]
     title: Volume meets published vendor minimums
     failure_title: Volume is below some vendors' published minimums
@@ -569,17 +587,20 @@ uses:
 signals:
   - id: slow_passed
     title: Slow and passed-around cases
+    requires_dates: [created_at, closed_at]
     unlocked_by_uses: [transfers, resolution]
     params: { slow_days: 30, min_owners: 3, provisional: true }
     shows: Cases open more than 30 days with three or more owners, by group
     disclaimer: The one service signal worth watching. Not proof that it causes churn.
   - id: handoff
     title: Handed off versus held
+    requires_dates: [created_at, closed_at]
     unlocked_by_uses: [transfers]
     shows: Resolution time and CSAT for cases kept by one owner versus handed on
     disclaimer: Harder cases get handed on, so this isn't a fair comparison of teams.
   - id: theme_movers
     title: Theme movers
+    requires_dates: [created_at]
     unlocked_by_any_check: [AI1, B2]
     # Grouped by reason, so a reason column with nothing in it leaves nothing to
     # compare. Unlocked by AI1, which a comment export can pass on its comment text
@@ -595,6 +616,7 @@ signals:
     disclaimer: Shows what is moving, not why.
   - id: open_risk
     title: Open work at risk
+    requires_dates: [created_at, closed_at]
     unlocked_by_uses: [resolution]
     requires_fields: [last_update_at]
     shows: Open cases older than 70% of closed cases took to resolve
@@ -606,6 +628,7 @@ signals:
     disclaimer: A commercial warning recorded in support, not something support caused.
   - id: self_help
     title: AI self-help candidates
+    requires_dates: [created_at, closed_at]
     unlocked_by_uses: [ai]
     requires_values: [reason]
     requires_category: [reason]
@@ -613,6 +636,7 @@ signals:
     disclaimer: A shortlist to test, not a deflection forecast.
   - id: keep_human
     title: Keep-a-human themes
+    requires_dates: [created_at, closed_at]
     unlocked_by_uses: [ai, transfers]
     requires_values: [reason]
     requires_category: [reason]

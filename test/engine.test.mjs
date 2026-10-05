@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile, parseDate, dateOrderOf, looksLikeDate } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
@@ -1390,14 +1390,28 @@ test("a signal either reports a number or says why it cannot", () => {
   }
 });
 
+// This test existed and still missed ambiguous_dates reaching the page as "On" with an
+// empty headline, because none of the reports it sampled produced that state. The
+// sample is the weak part, so every report that can produce a distinct state belongs in
+// it -- including the ones defined later in this file.
 test("the page handles every signal state the engine can emit", () => {
   const app = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
   const seen = new Set();
-  for (const r of [thinReason(2), audit("history").report, audit("comments").report])
-    for (const s of r.signals) seen.add(s.state);
-  assert.ok(seen.size >= 3, `only saw ${[...seen]}`);
+  const samples = [thinReason(2), audit("history").report, audit("comments").report,
+    proseReason(), ambiguousDateExport(), ambiguousDateExport({ settle: "mixed" })];
+  for (const r of samples) for (const s of r.signals) seen.add(s.state);
+  // Every state the engine can reach: on, caution, locked, too_few, free_text,
+  // ambiguous_dates. If a sample stops producing one, the count catches it.
+  assert.ok(seen.size >= 5, `only saw ${[...seen].join(", ")}`);
   for (const state of seen)
     assert.ok(app.includes(state), `src/app.js never mentions the signal state "${state}"`);
+
+  // And the panel must name it, not merely mention it somewhere: a state missing from
+  // the lookup renders as "On" with nothing to show, which is what went wrong.
+  const named = app.slice(app.indexOf("const STATE = {"), app.indexOf("const STATE = {") + 400);
+  for (const state of seen)
+    if (state !== "on" && state !== "caution")
+      assert.ok(named.includes(state), `the signal panel's STATE lookup is missing "${state}"`);
 });
 
 // ============================================================ nothing echoes the export
@@ -1632,4 +1646,249 @@ test("only contact reason and group are ever quoted back", () => {
   // stopped quoting them would show up as a wording problem rather than pass silently.
   const signals = report.signals.filter((s) => (s.rows || []).length);
   assert.ok(signals.length >= 2, "no signal tabled anything, so this proves nothing");
+});
+
+// =========================================================== ambiguous day/month dates
+// 03/12/2026 is the third of December or the twelfth of March and the value cannot say
+// which. It was read day-first, silently, so a US-ordered export came out with its days
+// and months swapped and nothing reported it. Every row below is a row from issue #4.
+const iso = (t) => (t == null ? null : new Date(t).toISOString().slice(0, 10));
+
+// Issue table 1: the slash form read both ways, and refused without an order.
+for (const [value, dayFirst, monthFirst] of [
+  ["12/03/2026", "2026-03-12", "2026-12-03"],
+  ["03/12/2026", "2026-12-03", "2026-03-12"],
+  ["01/02/2026", "2026-02-01", "2026-01-02"],
+]) {
+  test(`${value} reads both ways and neither by default`, () => {
+    assert.equal(iso(parseDate(value, "day_first")), dayFirst);
+    assert.equal(iso(parseDate(value, "month_first")), monthFirst);
+    assert.equal(parseDate(value), null, "no order means no guess");
+  });
+}
+
+// Issue fault 2: Date.UTC(2026, 24, 3) is January 2028. An impossible date must fail.
+for (const [value, order] of [["03/25/2026", "day_first"], ["25/25/2026", "day_first"],
+  ["25/25/2026", "month_first"], ["31/02/2026", "day_first"], ["02/31/2026", "month_first"],
+  ["2026-02-30", null], ["2026-13-01", null], ["2025-02-29", null]]) {
+  test(`${value} read ${order ?? "as ISO"} fails to parse rather than rolling over`, () => {
+    assert.equal(parseDate(value, order), null);
+  });
+}
+
+test("a leap day is a real date and still parses", () => {
+  assert.equal(iso(parseDate("2024-02-29")), "2024-02-29");
+  assert.equal(iso(parseDate("29/02/2024", "day_first")), "2024-02-29");
+});
+
+// Issue table 3: the three separators disagreed. The slash form took a day-first
+// branch, the dotted form fell through to Date.parse and came out month-first, and a
+// dotted European date above the 12th parsed to null.
+test("slash, dot and dash give the same answer for the same date", () => {
+  for (const order of ["day_first", "month_first"]) {
+    const got = ["12/03/2026", "12.03.2026", "12-03-2026"].map((v) => iso(parseDate(v, order)));
+    assert.equal(new Set(got).size, 1, `${order}: ${JSON.stringify(got)}`);
+  }
+  // The value that used to be unreadable in the dotted form.
+  assert.equal(iso(parseDate("25.03.2026", "day_first")), "2026-03-25");
+  // A mismatched pair of separators is not a date.
+  assert.equal(parseDate("12/03.2026", "day_first"), null);
+});
+
+test("an unambiguous form needs no order at all", () => {
+  for (const v of ["2026-03-12", "12 March 2026", "March 12, 2026", "2026-03-12 14:30"])
+    assert.equal(iso(parseDate(v)), "2026-03-12", v);
+});
+
+// ---------------------------------------------------------- the order, per column
+test("a value above 12 in the first position settles the column day-first", () => {
+  const o = dateOrderOf(["12/03/2026", "25/03/2026", "01/02/2026"]);
+  assert.equal(o.order, "day_first");
+  assert.equal(o.basis, "settled");
+  assert.equal(o.settled_by, 1, "one value is enough to settle the column");
+  assert.equal(o.examined, 3);
+});
+
+test("a value above 12 in the second position settles the column month-first", () => {
+  const o = dateOrderOf(["03/12/2026", "03/25/2026", "01/02/2026"]);
+  assert.equal(o.order, "month_first");
+  assert.equal(o.basis, "settled");
+});
+
+test("a column where nothing settles the order is ambiguous, not guessed", () => {
+  const o = dateOrderOf(["01/02/2026", "12/03/2026", "05/06/2026"]);
+  assert.equal(o.order, null, "no order was invented");
+  assert.equal(o.basis, "ambiguous");
+  assert.equal(o.ambiguous, 3);
+});
+
+test("a column with values above 12 in both positions is two formats, not an order", () => {
+  const o = dateOrderOf(["25/03/2026", "03/25/2026", "01/02/2026"]);
+  assert.equal(o.order, null);
+  assert.equal(o.basis, "mixed");
+  assert.equal(o.day_first_values, 1);
+  assert.equal(o.month_first_values, 1);
+});
+
+test("a column of ISO dates has no order to settle", () => {
+  const o = dateOrderOf(["2026-03-12", "2026-01-02", "12 March 2026"]);
+  assert.equal(o.basis, "unambiguous");
+  assert.equal(o.examined, 0);
+});
+
+// Inference runs before any order is known, so it asks whether either order would read
+// the value. The old guard against Date.parse reading "CASE-42" as a year must hold.
+test("column inference still tells dates from ID-shaped tokens", () => {
+  for (const v of ["12/03/2026", "03/25/2026", "25.03.2026", "2026-03-12"])
+    assert.equal(looksLikeDate(v), true, v);
+  for (const v of ["CASE-42", "ACC-0637", "2026-02-30", "", "LS-14255"])
+    assert.equal(looksLikeDate(v), false, v);
+});
+
+// ------------------------------------------- an export whose date order nothing settles
+// Written so every date falls on the 12th or below, which is the case that cannot be
+// settled from the values and so must not be guessed.
+function ambiguousDateExport({ settle = null, chosen = {} } = {}) {
+  const rows = [];
+  for (let i = 1; i <= 60; i++) {
+    const d = (i % 11) + 1, mo = (i % 9) + 1;
+    rows.push({
+      case_id: `LS-${i}`,
+      created_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026 09:00`,
+      closed_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026 17:00`,
+      last_update_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026 18:00`,
+      status: "Solved", reason: ["Billing", "Login issue", "Rota sync"][i % 3],
+      owner: ["A. Patel", "J. Okafor"][i % 2], group: ["Tier 1", "Tier 2"][i % 2],
+    });
+  }
+  // One value that can only be read one way, when the test wants a column settled.
+  // `settle` settles every date column; `settleCreatedOnly` settles just the one, which
+  // is how the per-column rule is tested.
+  const only = (v) => { rows[0].created_at = v; };
+  const all = (v) => { rows[0].created_at = v; rows[0].closed_at = v; rows[0].last_update_at = v; };
+  if (settle === "day_first") all("25/03/2026 09:00");
+  if (settle === "month_first") all("03/25/2026 09:00");
+  if (settle === "created_only") only("25/03/2026 09:00");
+  if (settle === "mixed") { rows[0].created_at = "25/03/2026 09:00"; rows[1].created_at = "03/25/2026 09:00"; }
+  const headers = Object.keys(rows[0]);
+  return runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules, date_order: chosen });
+}
+
+test("an export whose date order nothing settles is reported, not guessed", () => {
+  const r = ambiguousDateExport();
+  const o = r.load.date_order.created_at;
+  assert.equal(o.basis, "ambiguous");
+  assert.equal(o.order, null, "no order was invented");
+});
+
+for (const id of ["B4", "AI6"]) {
+  test(`${id} is held back while the date order is unclear`, () => {
+    const c = ambiguousDateExport().checks[id];
+    assert.equal(c.outcome, "ambiguous_dates", c.detail);
+    assert.equal(c.ambiguous_date_field, "created_at");
+    assert.match(c.detail, /could be either day-first or month-first/);
+    assert.match(c.detail, /Choose the order in the mapping table/);
+    // And not titled with a claim about the dates themselves.
+    const def = rules.checks.find((x) => x.id === id);
+    assert.notEqual(c.title, def.title);
+    assert.notEqual(c.title, def.failure_title);
+  });
+}
+
+// B4 is the check that counts impossible dates, so holding it back matters most: with
+// the dates unread every closed case looks as if it has no closing date, and B4 would
+// have reported the whole column as impossible.
+test("B4 does not report unread dates as impossible dates", () => {
+  const c = ambiguousDateExport().checks.B4;
+  assert.equal(c.outcome, "ambiguous_dates");
+  assert.doesNotMatch(c.detail, /impossible or contradictory/);
+});
+
+test("signals built on durations are held back too", () => {
+  const r = ambiguousDateExport();
+  for (const id of ["slow_passed", "handoff", "theme_movers", "open_risk", "self_help", "keep_human"]) {
+    const s = r.signals.find((x) => x.id === id);
+    assert.equal(s.state, "ambiguous_dates", `${id} ran on unread dates`);
+    assert.equal(s.headline, undefined, `${id} reported a headline`);
+  }
+});
+
+test("C1 still passes, because the columns are present whatever the order", () => {
+  // A column nobody can read is still a column. C1 asks only whether it is there.
+  assert.equal(ambiguousDateExport().checks.C1.outcome, "pass");
+});
+
+// One value above 12 settles the whole column, and everything runs.
+for (const [settle, order] of [["day_first", "day_first"], ["month_first", "month_first"]]) {
+  test(`one ${settle} value settles the columns and releases the checks`, () => {
+    const r = ambiguousDateExport({ settle });
+    assert.equal(r.load.date_order.created_at.order, order);
+    assert.equal(r.load.date_order.created_at.basis, "settled");
+    assert.equal(r.load.date_order.closed_at.order, order);
+    assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
+    assert.notEqual(r.checks.AI6.outcome, "ambiguous_dates");
+  });
+}
+
+// The order is settled per column, so settling one leaves its siblings unsettled. This
+// is the conservative reading: a check is released only when every date column it reads
+// can be read. Pooling evidence across a file's date columns would release more, and
+// would be a different rule from the one asked for.
+test("settling one date column does not settle another", () => {
+  const r = ambiguousDateExport({ settle: "created_only" });
+  assert.equal(r.load.date_order.created_at.basis, "settled");
+  assert.equal(r.load.date_order.closed_at.basis, "ambiguous");
+  // AI6 reads created_at only, so it runs.
+  assert.notEqual(r.checks.AI6.outcome, "ambiguous_dates");
+  // B4 reads both, so it waits on the one that is still unreadable.
+  assert.equal(r.checks.B4.outcome, "ambiguous_dates");
+  assert.equal(r.checks.B4.ambiguous_date_field, "closed_at", "names the column still unread");
+});
+
+test("a mixed column says it holds two formats and stays held back", () => {
+  const r = ambiguousDateExport({ settle: "mixed" });
+  const o = r.load.date_order.created_at;
+  assert.equal(o.basis, "mixed");
+  assert.equal(r.checks.B4.outcome, "ambiguous_dates");
+  assert.match(r.checks.B4.detail, /two date formats in one column/);
+  assert.match(r.checks.B4.title, /holds two date formats/);
+});
+
+// The user's choice is the way out of an ambiguous column, and it must actually work.
+test("choosing an order releases the checks and is recorded as a choice", () => {
+  const r = ambiguousDateExport({ chosen: { created_at: "month_first", closed_at: "month_first" } });
+  const o = r.load.date_order.created_at;
+  assert.equal(o.order, "month_first");
+  assert.equal(o.basis, "chosen");
+  assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
+  assert.notEqual(r.signals.find((s) => s.id === "handoff").state, "ambiguous_dates");
+});
+
+// The choice has to change the answer, or it is a control that does nothing.
+test("the chosen order changes the dates that come out", () => {
+  const day = ambiguousDateExport({ chosen: { created_at: "day_first", closed_at: "day_first" } });
+  const month = ambiguousDateExport({ chosen: { created_at: "month_first", closed_at: "month_first" } });
+  assert.notEqual(day.checks.AI6.detail, month.checks.AI6.detail,
+    "the two readings span different numbers of months");
+});
+
+test("what was read says the order and how it was decided", () => {
+  const amb = ambiguousDateExport().load.date_order.created_at;
+  assert.equal(amb.basis, "ambiguous");
+  assert.ok(amb.examined > 0, "says how many values it looked at");
+  const settled = ambiguousDateExport({ settle: "day_first" }).load.date_order.created_at;
+  assert.equal(settled.settled_by, 1, "says how many values settled it");
+  const chosen = ambiguousDateExport({ chosen: { created_at: "day_first" } }).load.date_order.created_at;
+  assert.equal(chosen.basis, "chosen");
+});
+
+// The demo exports are ISO throughout, so none of this should touch them.
+test("an ISO export is unaffected by any of this", () => {
+  for (const which of ["snapshot", "history", "comments"]) {
+    const { report } = audit(which);
+    for (const [field, o] of Object.entries(report.load.date_order))
+      assert.equal(o.basis, "unambiguous", `${which} ${field}`);
+    assert.notEqual(report.checks.B4.outcome, "ambiguous_dates", which);
+    for (const s of report.signals) assert.notEqual(s.state, "ambiguous_dates", `${which} ${s.id}`);
+  }
 });
