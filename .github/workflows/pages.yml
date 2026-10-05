@@ -50,6 +50,12 @@ jobs:
             exit 1
           fi
 
+      # After the staleness check, never before: it compares dist against a fresh
+      # build, and a commit cannot contain its own SHA, so stamping first would fail
+      # it on every run. Deployed reports name the commit that produced them.
+      - name: Stamp the commit into the built page
+        run: npm run stamp -- "${{ github.sha }}"
+
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist

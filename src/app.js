@@ -46,7 +46,11 @@
       || L.conflicts.length || L.derived.length;
     $("#load-note").innerHTML = notable ? loadBlock(L) : "";
     renderUses(r); renderFix(r); renderAudit(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
-    $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
+    // The build goes next to the versions: a pasted report has to be traceable to the
+    // commit that produced it, and "unstamped" is the honest answer for a page opened
+    // straight out of a clone rather than served from a deploy.
+    $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, build ${r.meta.build}`
+      + `, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
   }
 
   function renderUses(r) {
@@ -69,7 +73,7 @@
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>
-        ${u.empty_note ? `<p class="use-empty">${esc(u.empty_note)}</p>` : ""}
+        ${u.too_few_note ? `<p class="use-short">${esc(u.too_few_note)}</p>` : ""}
         ${bl ? `<p class="use-why">Held back by</p><ul class="use-bl">${bl}</ul>` : `<p class="use-why">Nothing holding it back.</p>`}
       </article>`;
     }).join("");
@@ -84,7 +88,12 @@
 
   function renderSignals(r) {
     $("#signals").innerHTML = r.signals.map((s) => {
-      if (s.state === "locked") return `<article class="sig sig-locked"><p class="sig-state">Locked</p><h3>${esc(s.title)}</h3><p class="sig-shows">${esc(s.shows)}</p><p class="sig-reason">${esc(s.reason)}</p></article>`;
+      // Locked and too-few are both "no number here, and this is why". They are kept
+      // apart because the answer differs: locked waits on a check, too few waits on
+      // the data. Anything with a reason and no headline renders as a reason, so a new
+      // state can never fall through to "On" and print an empty headline.
+      const STATE = { locked: "Locked", too_few: "Too few to judge" };
+      if (STATE[s.state]) return `<article class="sig sig-${s.state}"><p class="sig-state">${STATE[s.state]}</p><h3>${esc(s.title)}</h3><p class="sig-shows">${esc(s.shows)}</p><p class="sig-reason">${esc(s.reason)}</p></article>`;
       const rows = (s.rows || []).map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
       return `<article class="sig sig-${s.state}"><p class="sig-state">${s.state === "caution" ? "On, with care" : "On"}</p><h3>${esc(s.title)}</h3>
         <p class="sig-head">${esc(s.headline)}</p><p class="sig-detail">${esc(s.detail)}</p>
@@ -307,7 +316,17 @@
     state.uploadBot = { records: b.records, headers: b.headers,
       mapping: mapColumns({ headers: b.headers, rules: RULES, scope: "bot", records: b.records }).map };
     const found = Object.keys(state.uploadBot.mapping).filter((k) => k.startsWith("bot_")).length;
-    $("#bot-status").textContent = `${b.records.length.toLocaleString()} conversations read, ${found} bot fields recognised.`;
+    // Said at upload, not only after running: bot-scope matching finds a column for
+    // most bot fields in almost any export, so "10 bot fields recognised" on the case
+    // file reads as success. What matters is whether anything claims a resolution.
+    const claimedCol = state.uploadBot.mapping.bot_claimed_resolved;
+    const claimed = claimedCol ? b.records.filter((r) => /^(y|yes|true|1|t)$/i.test(String(r[claimedCol] ?? "").trim())).length : 0;
+    const same = state.upload && looksLikeSameFile(state.upload.records, state.upload.headers, state.uploadBot);
+    const warn = same
+      ? " This looks like the same file as your case export; the audit needs the bot's own conversations."
+      : !claimed ? " None of them is marked as a resolution the bot claimed, so this probably isn't a bot conversations export." : "";
+    $("#bot-status").textContent = `${b.records.length.toLocaleString()} conversations read, ${found} bot fields recognised.${warn}`;
+    $("#bot-status").classList.toggle("status-warn", !!warn);
   }
   // How a field got its column. A guess is worth checking; a missing required field is
   // worth fixing before anything is run on it.

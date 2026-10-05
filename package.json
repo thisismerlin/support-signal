@@ -8,6 +8,7 @@
     "data": "python3 generator/generate_demo.py",
     "rules": "python3 scripts/build_rules.py",
     "test": "npm run rules && node --test test/engine.test.mjs",
-    "build": "npm run rules && python3 scripts/build_page.py"
+    "build": "npm run rules && python3 scripts/build_page.py",
+    "stamp": "python3 scripts/stamp_build.py"
   }
 }

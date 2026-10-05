@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.5.0";
+export const ENGINE_VERSION = "0.6.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -375,6 +375,13 @@ const sameTheme = (a, b, normalise) => (normalise ? nearDuplicate(a, b) : plainE
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const quantile = (a, p) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const pct = (x, d = 0) => (x == null ? "n/a" : `${(x * 100).toFixed(d)}%`);
+// A share too small to show at this precision, but not zero. Printing "0.0%" beside
+// "2 of 5,083" invites the reader to believe one of the two numbers is wrong.
+const pctFloor = (x, d = 1) => {
+  if (x == null) return "n/a";
+  const smallest = 1 / 10 ** d / 100;
+  return x > 0 && x < smallest ? `under ${pct(smallest, d)}` : pct(x, d);
+};
 // "1 row" / "2 rows". Detail lines are read by people, and "1 rows" reads as a bug.
 const plural = (k, one, many = `${one}s`) => `${k.toLocaleString()} ${k === 1 ? one : many}`;
 const truthy = (v) => /^(y|yes|true|1|t)$/i.test(String(v).trim());
@@ -665,12 +672,50 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // with no reasons in it at all. A check that *measures* emptiness is different and
   // keeps its verdict: B2's whole job is the blank share, and B1's is the fill rate.
   const hasValues = (k) => has(k) && U.some((c) => real(c[k]));
-  const emptyMapped = () => Object.keys(rules.fields).filter((k) => has(k) && !hasValues(k));
-  // Named with its column, because the fix is to that column, not to the field.
-  const emptyDetail = (k) => {
-    const label = rules.fields[k].label;
-    const where = map[k] ? `mapped to “${map[k]}”` : "derived from the comment rows";
-    return `${label} is ${where}, and every value is blank or a placeholder. There is nothing here to judge, so this is left for a human rather than passed.`;
+  // Nearly empty is not fine either. A reason column filled on 2 of 5,083 cases is
+  // enough for `hasValues`, and that was enough to print "Reasons describe customer
+  // needs", to warn about sprawl across two values, and to report "100% of cases that
+  // have one" from two of them. A check that judges what the values *say* needs a
+  // floor; one that counts how many there are does not, which is why B1 and B2 don't
+  // declare requires_values and keep their verdicts.
+  const FLOOR = rules.evidence_floor || {};
+  const evidence = (k) => {
+    const n = has(k) ? U.filter((c) => real(c[k])).length : 0;
+    return { n, share: u ? n / u : 0 };
+  };
+  const belowFloor = (k) => {
+    const e = evidence(k);
+    const minN = FLOOR.min_cases ?? 0, minS = FLOOR.min_share ?? 0;
+    const shortCount = e.n < minN, shortShare = e.share < minS;
+    return shortCount || shortShare ? { ...e, minN, minS, shortCount, shortShare } : null;
+  };
+  // Only the floor that failed. Both can, and often do, but naming both when one was
+  // met tells the reader the wrong thing about their data.
+  const floorWanted = (e) => (e.shortCount && e.shortShare ? `${e.minN} cases and ${pct(e.minS, 0)}`
+    : e.shortCount ? `${e.minN} cases` : `${pct(e.minS, 0)} of cases`);
+  // The first field a check or signal declares that doesn't clear the floor.
+  const shortOn = (def) => {
+    for (const k of def.requires_values || []) {
+      const e = belowFloor(k);
+      if (e) return { field: k, ...e };
+    }
+    return null;
+  };
+  // The same shortfall said as a reason rather than as a check detail, for a signal.
+  const shortReason = (k, e) => {
+    const label = rules.fields[k].label.toLowerCase();
+    return e.n
+      ? `The ${label} column has a real value on only ${e.n.toLocaleString()} of ${u.toLocaleString()} cases (${pctFloor(e.share)}), below the ${floorWanted(e)} needed to group by it.`
+      : `The ${label} column is there but every value in it is blank, so there is nothing to group by.`;
+  };
+  // Named with its column and its counts, because the fix is to that column and the
+  // reader needs to see how far short it fell rather than take "too few" on trust.
+  const tooFewDetail = (e) => {
+    const label = rules.fields[e.field].label;
+    const where = map[e.field] ? `mapped to “${map[e.field]}”` : "derived from the comment rows";
+    if (!e.n) return `${label} is ${where}, and every value is blank or a placeholder. There is nothing here to judge.`;
+    return `${label} is ${where}, with a real value on ${e.n.toLocaleString()} of ${u.toLocaleString()} cases (${pctFloor(e.share)}). `
+      + `Judging what the values say needs at least ${floorWanted(e)}, so there isn't enough here to judge.`;
   };
 
   const R = {};
@@ -680,11 +725,12 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const d = checkDef[id];
     // A check may carry its own amber title, for when "failed" would misdescribe
     // what the export holds (B11: the account and the timings are there).
-    // An empty column gets its own title first. Neither of the others can be used:
-    // both the pass title and the failure title are claims about the values, and
-    // "Reasons describe teams, not customers" is as false of an empty reason column
-    // as "Reasons describe customer needs" is.
-    const title = extra.empty_field && d.empty_title ? d.empty_title
+    // A column with too few values gets its own title first. Neither of the others
+    // can be used: both the pass title and the failure title are claims about the
+    // values, and on two reasons "Reasons describe teams, not customers" is as
+    // baseless as "Reasons describe customer needs".
+    const title = extra.title_from && d[extra.title_from] ? d[extra.title_from]
+      : extra.too_few_field && d.too_few_title ? d.too_few_title
       : outcome === "pass" ? d.title
       : extra.conflict_cases && d.conflict_title ? d.conflict_title
       : outcome === "warn" && d.warn_title ? d.warn_title
@@ -801,7 +847,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // B3 near-duplicates
   const nearDups = [];
-  if (has("reason") && !hasValues("reason")) set("B3", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  const b3Short = has("reason") ? shortOn(checkDef.B3) : null;
+  if (b3Short) set("B3", "too_few", null, plural(b3Short.n, "reason"), tooFewDetail(b3Short), { too_few_field: b3Short.field });
   else if (has("reason")) {
     const names = realReasons.map(([v]) => v);
     for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++)
@@ -877,7 +924,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // AI2
   if (!has("reason")) set("AI2", "not_in_export", null, "No reason", "No contact reason column.");
-  else if (!hasValues("reason")) set("AI2", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  else if (shortOn(checkDef.AI2)) { const e = shortOn(checkDef.AI2);
+    set("AI2", "too_few", null, plural(e.n, "reason"), tooFewDetail(e), { too_few_field: e.field }); }
   else {
     const words = rules.team_words;
     const teamy = (v) => words.some((w) => new RegExp(`\\b${w}\\b`, "i").test(v));
@@ -889,7 +937,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 
   // AI3. Telling someone to sample cases from similar-sounding reasons is useless
   // advice when the reason column is empty, so it says what to fix instead.
-  if (has("reason") && !hasValues("reason")) set("AI3", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  const ai3Short = has("reason") ? shortOn(checkDef.AI3) : null;
+  if (ai3Short) set("AI3", "too_few", null, plural(ai3Short.n, "reason"), tooFewDetail(ai3Short), { too_few_field: ai3Short.field });
   else set("AI3", has("reason") ? "needs_human" : "not_in_export", null, "Review",
     nearDups.length ? `Start with the near-duplicates found: ${nearDups.map(([x, y]) => `"${x}" / "${y}"`).join(", ")}. Then sample cases from similar reasons.` : "Sample cases from similar-sounding reasons and check they really differ.");
 
@@ -906,7 +955,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const needTotal = needReasons.reduce((s, [, k]) => s + k, 0);
   // An empty reason column and a column of nothing but team-type reasons both leave
   // nothing to measure, but they are different problems with different fixes.
-  if (has("reason") && !hasValues("reason")) set("AI5", "needs_human", null, "Reason empty", emptyDetail("reason"), { empty_field: "reason" });
+  const ai5Short = has("reason") ? shortOn(checkDef.AI5) : null;
+  if (ai5Short) set("AI5", "too_few", null, plural(ai5Short.n, "reason"), tooFewDetail(ai5Short), { too_few_field: ai5Short.field });
   else if (!needTotal) set("AI5", has("reason") ? "needs_human" : "not_in_export", null, "n/a", "No usable reasons to measure.");
   else {
     const top10 = needReasons.slice(0, 10).reduce((s, [, k]) => s + k, 0) / needTotal;
@@ -927,10 +977,28 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const botRows = bot && bot.records ? bot.records : [];
   const botHas = (k) => !!(bot && bot.mapping && bot.mapping[k] && botRows.length);
   const b11Words = (o) => (checkDef.B11.outcomes || {})[o] || "";
+  // How many conversations this file marks as a resolution the bot claimed. Counted
+  // here and not in the audit below, which is handed B11's verdict and so cannot
+  // inform it. Without this, B11 passed on the case export loaded into the bot slot:
+  // bot-scope matching had found a column for bot_linked_cases, which was all the
+  // green path asked for, and nobody checked there was anything to audit.
+  const botClaimed = bot && bot.mapping && bot.mapping.bot_claimed_resolved
+    ? botRows.filter((r) => truthy(String(r[bot.mapping.bot_claimed_resolved] ?? ""))).length : 0;
+  const botSameFile = looksLikeSameFile(records, headers, bot);
+  // The basis the audit runs on. Named here rather than read back off B11's outcome,
+  // because B11's amber now covers two different things and only one of them is a
+  // conversation export that could be matched by account and timing.
+  let b11Basis = "none";
   if (!botRows.length) set("B11", "not_in_export", null, "No bot export", b11Words("not_in_export"));
-  else if (botHas("bot_linked_cases")) set("B11", "pass", 1, "Case links", b11Words("pass"));
-  else if (botHas("account_id") && botHas("bot_started_at") && botHas("bot_ended_at"))
+  else if (botSameFile) set("B11", "warn", 0, "Same file", b11Words("same_file"),
+    { title_from: "same_file_title", bot_same_as_cases: true });
+  else if (!botClaimed) set("B11", "too_few", 0, "0 claimed", b11Words("too_few"),
+    { title_from: "too_few_title", bot_conversations: botRows.length, bot_claimed: 0 });
+  else if (botHas("bot_linked_cases")) { b11Basis = "case_links"; set("B11", "pass", 1, "Case links", b11Words("pass")); }
+  else if (botHas("account_id") && botHas("bot_started_at") && botHas("bot_ended_at")) {
+    b11Basis = "account_and_timing";
     set("B11", "warn", 0.5, "Account and timings", b11Words("warn"));
+  }
   else set("B11", "not_in_export", 0, "Not found", b11Words("not_in_export"));
 
   // Checks defined in the rules but not computed by this engine version. Without an
@@ -938,14 +1006,17 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   for (const c of rules.checks) if (!R[c.id]) set(c.id, "needs_human", null, "Not yet", "This engine version doesn't run this check yet.");
 
   // ---------- the resolution audit ----------
-  const resolution_audit = resolutionAudit({ bot, botRows, U, byIdKey: has("case_id"), rules, outcome: R.B11.outcome, real });
+  const resolution_audit = resolutionAudit({ bot, botRows, U, byIdKey: has("case_id"), rules, basis: b11Basis, real });
 
   // ---------- uses ----------
   // A use may need a file beyond the case export. It still reports its verdict
   // when that file is absent, so the question stays visible, but it is left out of
   // the fix-first weighting below: a missing second file isn't a flaw in this one.
   const fileSupplied = (f) => (f === "bot" ? botRows.length > 0 : true);
-  const rank = { pass: 0, warn: 1, needs_human: 1, fail: 2, not_in_export: 2 };
+  // too_few ranks with needs_human: it holds a use back from green without being a
+  // verdict on the export, and it maps to "can't tell yet" below rather than to amber
+  // "usable with care", which would be too generous about data nothing can be read from.
+  const rank = { pass: 0, warn: 1, needs_human: 1, too_few: 1, fail: 2, not_in_export: 2 };
 
   // A dirty collapse is a fault in named fields, so it holds back only the uses whose
   // numbers come from one of them. A conflict in follow_up_of says nothing about how
@@ -971,35 +1042,48 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     return { setAside: true, soft: readsConflicted(us.optional.filter((id) => id !== "C4")) };
   };
 
-  // What a use's own checks read and found nothing in. A verdict assembled from
-  // checks that each say "can't be judged" should say why on the use itself: an AI
-  // readiness panel reading "usable with care" next to a full comment-text column
-  // gives no hint that the reason column it groups by is empty. Both halves are
-  // named, because "no reason" alone reads as if nothing is in the export at all.
-  const empties = emptyMapped();
-  const emptyNote = (us) => {
-    const reads = [...new Set(us.required.concat(us.optional || []).flatMap((id) => checkDef[id].reads_fields || []))];
-    const blank = reads.filter((k) => empties.includes(k));
-    if (!blank.length) return {};
+  // What a use's own checks needed values in and didn't get enough of. A verdict
+  // assembled from checks that each say "can't be judged" should say why on the use
+  // itself: an AI readiness panel next to a full comment-text column gives no hint
+  // that the reason column it groups by holds two values. Both halves are named,
+  // because "no reason" alone reads as if nothing is in the export at all.
+  //
+  // Driven by the checks' own requires_values, not by every field they read: B8 reads
+  // csat_score to measure how many cases carry a score, and a note saying that column
+  // is thin would be repeating B8's answer back as a fault.
+  const shortNote = (us) => {
+    const ids = us.required.concat(us.optional || []);
+    const declared = [...new Set(ids.flatMap((id) => checkDef[id].requires_values || []))];
+    const short = declared.map((k) => [k, belowFloor(k)]).filter(([, e]) => e);
+    if (!short.length) return {};
     const label = (k) => rules.fields[k].label.toLowerCase();
     const list = (a) => a.map(label).join(", ").replace(/, ([^,]*)$/, " and $1");
+    const reads = [...new Set(ids.flatMap((id) => checkDef[id].reads_fields || []))];
     const held = reads.filter((k) => rules.fields[k].shape === "text" && hasValues(k));
     const lead = held.length ? `The ${list(held)} ${held.length > 1 ? "columns are" : "column is"} there, but ` : "";
-    const one = blank.length === 1;
-    return { empty_fields: blank, empty_note: `${lead}${lead ? "the" : "The"} ${list(blank)} ${one ? "field is" : "fields are"} mapped to ${one ? "a column" : "columns"} with no values in ${one ? "it" : "them"}, so the checks that read ${one ? "it" : "them"} can't be judged.` };
+    const keys = short.map(([k]) => k);
+    const one = keys.length === 1;
+    const body = one
+      ? `${list(keys)} field has a real value on only ${short[0][1].n.toLocaleString()} of ${u.toLocaleString()} cases, too little to judge from`
+      : `${list(keys)} fields hold too little to judge: ${short.map(([k, e]) => `${label(k)} on ${e.n.toLocaleString()}`).join(", ")} of ${u.toLocaleString()} cases`;
+    return { too_few_fields: keys, too_few_note: `${lead}${lead ? "the" : "The"} ${body}.` };
   };
   const uses = rules.uses.map((us) => {
     const scoped = reach(us);
     const at = (id) => (scoped && scoped.setAside && id === "C4" ? { ...R[id], outcome: "pass" } : R[id]);
     const req = us.required.map(at);
     const worst = req.reduce((a, b) => (rank[b.outcome] > rank[a.outcome] ? b : a));
-    let outcome = worst.outcome === "needs_human" ? "warn" : worst.outcome;
+    let outcome = worst.outcome === "needs_human" ? "warn" : worst.outcome === "too_few" ? "needs_human" : worst.outcome;
     const optBad = us.optional.map(at).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
     // Matching returns by timing alone isn't implemented, so the audit returns
     // can't tell for every conversation. That is this tool's limit, not a flaw in
     // the export, so it reports "needs a human" rather than amber "usable with care".
     if (us.id === "resolution_audit" && resolution_audit.basis === "account_and_timing") outcome = "needs_human";
+    // A file with no claimed resolutions, or the case export uploaded twice, is not a
+    // judgement on the bot export: there isn't one yet. "Usable with care" would be
+    // read as a verdict on data the audit never saw.
+    if (us.id === "resolution_audit" && (R.B11.bot_same_as_cases || R.B11.outcome === "too_few")) outcome = "needs_human";
     // A conflict only an optional check reads costs the use its green, never its verdict.
     if (scoped && scoped.soft && outcome === "pass") outcome = "warn";
     const blockers = req.filter((c) => rank[c.outcome] >= 1).concat(outcome !== "fail" && outcome !== "not_in_export" ? optBad : []);
@@ -1008,13 +1092,13 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
       // Said plainly on the use, because "not held back by C4" is only trustworthy if
       // the reason it was set aside is visible next to the verdict.
       ...(scoped && scoped.setAside ? { conflicts_set_aside: [...conflictFields], conflicts_are_context_only: !!scoped.soft } : {}),
-      ...emptyNote(us),
+      ...shortNote(us),
       ...(us.needs_file ? { needs_file: us.needs_file, file_supplied: fileSupplied(us.needs_file) } : {}) };
   });
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
 
   // ---------- signals ----------
-  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, U, real, rules, hist, cautions }));
+  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, belowFloor, shortReason, U, real, rules, hist, cautions }));
 
   // ---------- fix first ----------
   const blockCount = {};
@@ -1031,8 +1115,13 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const load = summariseLoad(L, U, rules);
 
   return {
-    meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status, source,
+    // build is the commit the page was deployed from, so a pasted report says which
+    // build produced it. Read off the rules object like the rules version, which keeps
+    // the engine a pure function of its inputs; the deploy workflow puts it there.
+    meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status,
+      build: rules.meta.build || "unstamped", source,
       rows: n, cases: u, shape: L.shape, history_rows: history ? history.length : 0, bot_rows: botRows.length,
+      bot_claimed: botRows.length ? botClaimed : null, bot_same_as_cases: botSameFile,
       generated: new Date().toISOString() },
     load,
     checks: R, uses, signals, fixFirst, drivers, resolution_audit, cautions,
@@ -1048,7 +1137,25 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
 // Every parameter comes from rules.resolution_audit.params. There is deliberately
 // no parameter for where returns begin: they begin where the escalation window
 // ends, so no same-theme case can land between the two and be banked as silence.
-function resolutionAudit({ bot, botRows, U, byIdKey, rules, outcome, real }) {
+// Is the file in the bot slot the same file as the case export? Compared on structure
+// and on the values of three rows rather than every cell: enough to catch the mistake
+// that actually happens, which is uploading the case export into both slots. Bot-scope
+// matching will happily find a column for every bot field in a case export, so without
+// this the audit reports on cases as though they were conversations.
+export function looksLikeSameFile(records, headers, bot) {
+  if (!bot || !bot.records || !bot.records.length || !records || !records.length) return false;
+  if (bot.records === records) return true;
+  const ch = headers && headers.length ? headers : Object.keys(records[0]);
+  const bh = bot.headers && bot.headers.length ? bot.headers : Object.keys(bot.records[0]);
+  if (bh.length !== ch.length || bh.some((h, i) => h !== ch[i])) return false;
+  if (bot.records.length !== records.length) return false;
+  const row = (r) => ch.map((h) => String(r[h] ?? "")).join("\u0000");
+  for (const i of [0, records.length >> 1, records.length - 1])
+    if (row(records[i]) !== row(bot.records[i])) return false;
+  return true;
+}
+
+function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
   const spec = rules.resolution_audit || {};
   const P = spec.params;
   if (!P) return { available: false, reason: "The rules carry no resolution_audit parameters." };
@@ -1058,7 +1165,7 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, outcome, real }) {
   const normalise = !!P.normalise_reasons;
   const base = {
     available: true,
-    basis: outcome === "pass" ? "case_links" : outcome === "warn" ? "account_and_timing" : "none",
+    basis,
     params: { return_windows_days: windows, escalation_within_minutes: P.escalation_within_minutes, normalise_reasons: normalise },
     disclaimer: spec.disclaimer,
   };
@@ -1082,7 +1189,7 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, outcome, real }) {
     const id = bg(r, "bot_conversation_id");
     if (!truthy(bg(r, "bot_claimed_resolved"))) { out_of_scope++; continue; }
     claimed++;
-    if (outcome !== "pass") {
+    if (basis !== "case_links") {
       // Amber B11 means the links would have to be inferred from account and
       // timing. That isn't implemented, and guessing would be worse than silence.
       buckets.cant_tell++;
@@ -1147,14 +1254,14 @@ function computeSignal(s, ctx) {
   const base = { id: s.id, title: s.title, shows: s.shows, disclaimer: s.disclaimer,
     ...(heard.length ? { cautions: heard } : {}) };
   for (const f of s.requires_fields || []) if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
-  // A field this signal groups or counts by, which is present and holds nothing. Left
-  // to run, theme movers reported "Stable" off two empty quarters and self-help
-  // reported "0 candidate reasons", both of which read as findings rather than as the
-  // absence of anything to find.
+  // A field this signal groups or counts by, which is present but holds too little to
+  // group by. Left to run, theme movers reported "Stable" off two empty quarters and
+  // self-help "0 candidate reasons", both of which read as findings rather than as the
+  // absence of anything to find. Two reasons on 5,083 cases does the same thing.
   for (const f of s.requires_values || []) {
     if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };
-    if (!ctx.hasValues(f)) return { ...base, state: "locked",
-      reason: `The ${ctx.rules.fields[f].label.toLowerCase()} column is there but every value in it is blank, so there is nothing to group by.` };
+    const e = ctx.belowFloor(f);
+    if (e) return { ...base, state: "too_few", reason: ctx.shortReason(f, e) };
   }
   if (s.unlocked_by_uses) {
     const blocked = s.unlocked_by_uses.map((id) => useById[id]).filter((x) => x.outcome === "fail" || x.outcome === "not_in_export");
@@ -1186,10 +1293,22 @@ function computeSignal(s, ctx) {
     const share = (a) => { const m = new Map(); for (const c of a) m.set(c.reason, (m.get(c.reason) || 0) + 1); return m; };
     const r = share(recent), p = share(prior);
     const moves = [...new Set([...r.keys(), ...p.keys()])].map((k) => ({ k, d: (r.get(k) || 0) / Math.max(1, recent.length) - (p.get(k) || 0) / Math.max(1, prior.length), n: (r.get(k) || 0) + (p.get(k) || 0) }))
-      .filter((x) => x.n >= 30).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
-    out.headline = moves[0] ? `${moves[0].k} ${moves[0].d > 0 ? "up" : "down"}` : "Stable";
+      .sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+    // A reason has to appear often enough for a move in its share to mean anything.
+    const minPer = P.min_cases_per_reason;
+    const big = moves.filter((x) => x.n >= minPer);
+    if (!big.length) {
+      // "Stable" asserts that nothing moved. Nothing was measurable, which is not the
+      // same claim, and on a thinly filled reason column it is the wrong one.
+      const best = moves.reduce((a, b) => (b.n > (a?.n ?? -1) ? b : a), null);
+      return { ...out, state: "too_few",
+        reason: `No reason appears on ${minPer} or more cases, so no change in share can be read. `
+          + (best ? `The most common, "${best.k}", has ${best.n}.` : "There are no reasons to compare."),
+        headline: undefined };
+    }
+    out.headline = `${big[0].k} ${big[0].d > 0 ? "up" : "down"}`;
     out.detail = "Change in share of cases, last quarter versus the nine months before.";
-    out.rows = moves.slice(0, 4).map((m) => [m.k, `${m.d > 0 ? "+" : ""}${(m.d * 100).toFixed(1)} pts`, `${m.n} cases`]);
+    out.rows = big.slice(0, 4).map((m) => [m.k, `${m.d > 0 ? "+" : ""}${(m.d * 100).toFixed(1)} pts`, `${m.n} cases`]);
   } else if (s.id === "open_risk") {
     const p70 = quantile(closed.map((c) => c._days), 0.7);
     const end = Math.max(...U.map((c) => c._created).filter((x) => x != null));

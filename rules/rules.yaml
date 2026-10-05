@@ -9,8 +9,14 @@
 #   higher: pass if value >= pass, warn if >= warn, else fail
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
+# VERSIONING. Both versions below must be bumped on any change to what the tool
+# reports: a new or changed check, threshold, outcome, floor or wording. Three
+# behaviour changes once shipped under one version pair, which left a pasted report
+# unable to say which build produced it. The report also carries meta.build, the
+# commit SHA, stamped into dist by the deploy workflow -- a commit cannot contain its
+# own SHA, so it is not committed, and an unstamped build says so rather than lying.
 meta:
-  version: 0.8.0
+  version: 0.9.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -19,6 +25,20 @@ meta:
     fail: { label: Red, text: Don't build on this yet. }
     not_in_export: { label: Not in export, text: The export doesn't contain this. Not a judgement on your system. }
     needs_human: { label: Needs a human, text: Can't be judged automatically. The report says what to look at. }
+    too_few: { label: Too few to judge, text: "The column holds some values, but too few to judge anything from. The reason says how many it found." }
+
+# How much evidence a check or signal needs before it may judge what a field's values
+# say. Nearly empty is not fine: a reason column filled on 2 of 543 cases produced a
+# green "Reasons describe customer needs", an amber warning about sprawl across its two
+# values, and "100% of cases that have one" from two cases. Both floors must be met.
+#
+# PROVISIONAL, like every threshold here: a starting point to calibrate against real
+# exports, not evidence. min_cases is the conventional small-sample floor and matches
+# the per-reason minimum theme movers already used. Don't quote either publicly.
+evidence_floor:
+  min_cases: 30      # real values, counted per case, not per row
+  min_share: 0.05    # and that many must be at least this share of all cases
+  provisional: true
 
 placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"]
 junk_text: ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"]
@@ -278,10 +298,11 @@ checks:
   - id: B3
     band: B
     dimension: consistency
+    requires_values: [reason]   # judges what the reasons say, so it needs enough of them
     reads_fields: [reason]
     title: Reason codes are a tidy set
     failure_title: Reason codes have sprawled
-    empty_title: Reason codes can't be judged
+    too_few_title: Reason codes can't be judged
     metric: Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times
     why: Duplicates like "SSO" and "Single sign-on" split one issue in two and make trends meaningless.
     fix: Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.
@@ -387,10 +408,11 @@ checks:
   - id: AI2
     band: B
     dimension: validity
+    requires_values: [reason]   # judges what the reasons say, so it needs enough of them
     reads_fields: [reason]
     title: Reasons describe customer needs
     failure_title: Reasons describe teams, not customers
-    empty_title: Reason wording can't be judged
+    too_few_title: Reason wording can't be judged
     metric: Share of volume whose reason names a team, tier or process ("Tier 2", "Escalated")
     threshold: { dir: lower, pass: 0.1, warn: 0.3, provisional: true }
     why: A reason like "Tier 2" tells a bot nothing about what the customer wanted. AI intents must describe the customer's need.
@@ -400,10 +422,11 @@ checks:
   - id: AI3
     band: B
     dimension: consistency
+    requires_values: [reason]   # judges what the reasons say, so it needs enough of them
     reads_fields: [reason]
     title: Reasons don't overlap
     failure_title: Reasons overlap
-    empty_title: Reason overlap can't be judged
+    too_few_title: Reason overlap can't be judged
     metric: Reviewed by a person in this version; the report lists near-duplicate reasons to start from
     why: Zendesk warns that overlapping intents cause "low-confidence or wrong topic detection".
     fix: Merge or redefine overlapping reasons so each covers one need.
@@ -424,10 +447,11 @@ checks:
   - id: AI5
     band: A
     dimension: fit for use
+    requires_values: [reason]   # judges what the reasons say, so it needs enough of them
     reads_fields: [reason]
     title: Demand is concentrated enough to automate
     failure_title: Demand is too scattered to automate easily
-    empty_title: Demand spread can't be judged
+    too_few_title: Demand spread can't be judged
     metric: Share of cases with a real reason that fall in the ten most common reasons
     threshold: { dir: higher, pass: 0.5, warn: 0.3, provisional: true }
     why: Automation pays back fastest on frequent, repeated questions.
@@ -460,6 +484,10 @@ checks:
       pass: Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.
       warn: "Conversations carry an account and start and end times, but no case links. Matching returns by timing alone isn't supported yet, so this export can't be audited. Every claimed resolution is reported as can't tell; export the follow-up case IDs and the audit runs."
       not_in_export: This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files.
+      too_few: "Nothing in this file is marked as a resolution the bot claimed, so there is nothing for the audit to check. A bot conversations export records whether the bot claimed it resolved each conversation; a file with none of those is probably not one, or the claimed-resolution column has not been mapped."
+      same_file: "This looks like the same file as the case export: same columns, same number of rows, same values where checked. The audit asks what happened in the cases *after* a bot conversation, so it needs the bot's own conversations, not the cases again."
+    too_few_title: No claimed resolutions to audit
+    same_file_title: The bot file looks like the case file
     note: >-
       The engine reports these words verbatim, and uses warn_title on the amber
       path, because the account and the timings are present and "aren't linked"
@@ -518,6 +546,10 @@ signals:
     # alone, so an empty reason column has to be checked separately or this reports
     # "Stable" off two empty quarters.
     requires_values: [reason]
+    # A reason has to appear this many times before a move in its share means anything.
+    # Provisional. Below it for every reason the signal says so, rather than reporting
+    # "Stable", which is a finding it has no basis for.
+    params: { min_cases_per_reason: 30, provisional: true }
     shows: Reasons rising or falling in the last quarter against the previous nine months
     disclaimer: Shows what is moving, not why.
   - id: open_risk

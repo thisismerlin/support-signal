@@ -1,6 +1,8 @@
 """Compile rules/rules.yaml to dist/rules.json and check internal references."""
 import json, re, sys, yaml
 from pathlib import Path
+
+BUILD_PLACEHOLDER = "unstamped"
 root = Path(__file__).resolve().parent.parent
 r = yaml.safe_load((root / "rules/rules.yaml").read_text())
 ids = {c["id"] for c in r["checks"]}
@@ -89,11 +91,33 @@ for k, f in r["fields"].items():
         continue
     errs += [f"field {k} guess_requires_word {x!r} is not one lowercase word" for x in w
              if not isinstance(x, str) or not x.islower() or " " in x]
-# A check the engine can report as empty needs a title for it: the pass and failure
-# titles are both claims about the values, and neither is true of a column with none.
+# The evidence floor gates every judgement about what a field's values say, so a
+# missing or nonsensical floor would silently let nearly-empty columns be judged again.
+f = r.get("evidence_floor")
+if not isinstance(f, dict):
+    errs.append("evidence_floor is missing")
+else:
+    if not isinstance(f.get("min_cases"), int) or f["min_cases"] < 1:
+        errs.append("evidence_floor.min_cases must be a positive integer")
+    if not isinstance(f.get("min_share"), (int, float)) or not 0 < f["min_share"] < 1:
+        errs.append("evidence_floor.min_share must be a share between 0 and 1")
+    if f.get("provisional") is not True:
+        errs.append("evidence_floor must be marked provisional: it is not calibrated")
+# requires_values names fields on checks as well as signals, and the engine holds the
+# check back when one is below the floor. A misspelt name would never hold anything back.
+for group in ("checks", "signals"):
+    for item in r.get(group, []):
+        errs += [f"{group[:-1]} {item['id']} requires_values {v!r}, which is not a field"
+                 for v in item.get("requires_values", []) if v not in r["fields"]]
+# A check that can report too few needs a title for it, and one that cannot must not
+# carry a title it will never show.
 for c in r["checks"]:
-    if c.get("empty_title") is not None and not str(c["empty_title"]).strip():
-        errs.append(f"check {c['id']} has an empty empty_title")
+    if c.get("requires_values") and not c.get("too_few_title"):
+        errs.append(f"check {c['id']} requires_values but has no too_few_title")
+# theme movers reads its own per-reason minimum by name.
+tm = next((x for x in r.get("signals", []) if x["id"] == "theme_movers"), None)
+if tm and not isinstance((tm.get("params") or {}).get("min_cases_per_reason"), int):
+    errs.append("signal theme_movers has no integer params.min_cases_per_reason")
 # C4 names the dirty-collapse case separately, and the engine reports both.
 for key in ("conflict_title", "conflict_fix"):
     if not next(c for c in r["checks"] if c["id"] == "C4").get(key):
@@ -124,6 +148,12 @@ errs += [f"resolution_audit.params missing {p}" for p in
          ("return_windows_days", "escalation_within_minutes", "normalise_reasons") if p not in params]
 if errs:
     sys.exit("Rule errors:\n" + "\n".join(errs))
+# The build id. A placeholder in the committed artefact, replaced with the commit SHA
+# by scripts/stamp_build.py at deploy time. It has to be a placeholder rather than the
+# real SHA: a commit cannot contain its own SHA, and writing one at build time would
+# make "dist matches a fresh build" fail on every run. An unstamped build keeps saying
+# "unstamped", which is true of a page opened straight out of a clone.
+r["meta"]["build"] = BUILD_PLACEHOLDER
 (root / "dist").mkdir(exist_ok=True)
 (root / "dist/rules.json").write_text(json.dumps(r, default=str))
 comment_fields = sum(1 for f in r["fields"].values() if f.get("level") == "comment")

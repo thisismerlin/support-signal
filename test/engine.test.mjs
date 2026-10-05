@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
@@ -1016,62 +1016,129 @@ test("an exact name match is trusted even where the values look wrong", () => {
 // A column that is present and holds nothing. Every check that read its values to
 // judge something else passed on it: B3 was green off "0 distinct reasons", and AI2
 // printed "Reasons describe customer needs" about a column with no reasons in it.
-function emptyReason() {
+// Nearly empty is the case that actually turned up: reason filled on 2 cases out of
+// 543. Zero is the easy end of the same problem, so both are asserted.
+function thinReason(keepCases) {
   const { headers, records } = load("larkspur_snapshot.csv");
-  const blanked = records.map((r) => ({ ...r, reason: "" }));
+  const byCase = new Map();
+  for (const r of records) if (!byCase.has(r.case_id)) byCase.set(r.case_id, r);
+  const keep = new Set([...byCase.keys()].slice(0, keepCases));
+  const thinned = records.map((r) => (keep.has(r.case_id) ? r : { ...r, reason: "" }));
   const mapping = autoMap(headers, rules);
   assert.equal(mapping.reason, "reason", "the column is still mapped");
-  return runAudit({ records: blanked, mapping, headers, rules });
+  return runAudit({ records: thinned, mapping, headers, rules });
 }
 
 for (const id of ["B3", "AI2", "AI3", "AI5"]) {
-  test(`${id} cannot be judged when the reason column is mapped and empty`, () => {
-    const c = emptyReason().checks[id];
-    assert.equal(c.outcome, "needs_human", c.detail);
-    assert.equal(c.empty_field, "reason");
+  test(`${id} reports too few to judge when the reason column is nearly empty`, () => {
+    const c = thinReason(2).checks[id];
+    assert.equal(c.outcome, "too_few", c.detail);
+    assert.equal(c.too_few_field, "reason");
+    // The counts, so the reader can see how far short it fell.
+    assert.match(c.detail, /on 2 of 5,083 cases/);
+    assert.match(c.detail, /at least 30 cases and 5%/);
+  });
+
+  test(`${id} reports too few to judge when the reason column is empty`, () => {
+    const c = thinReason(0).checks[id];
+    assert.equal(c.outcome, "too_few", c.detail);
     assert.match(c.detail, /every value is blank/);
   });
 }
 
-// B2 and B1 measure emptiness, so they keep their verdicts: 100% blank is B2's answer,
-// not a reason it can't answer. Turning these into "can't tell" would hide the fault.
-test("the checks that measure emptiness still report it", () => {
-  const r = emptyReason();
-  assert.equal(r.checks.B2.outcome, "fail");
-  assert.match(r.checks.B2.detail, /100% of cases sit in blank or catch-all reasons/);
-  assert.equal(r.checks.B1.outcome, "fail");
+// The floor is declared, not buried, and both halves of it bite.
+test("the evidence floor is declared as a count and a share, and marked provisional", () => {
+  const f = rules.evidence_floor;
+  assert.ok(Number.isInteger(f.min_cases) && f.min_cases > 0, "min_cases");
+  assert.ok(f.min_share > 0 && f.min_share < 1, "min_share");
+  assert.equal(f.provisional, true, "a starting point, not evidence");
 });
 
-test("signals grouped by reason lock rather than report a finding", () => {
-  const r = emptyReason();
+// Enough cases but too small a share, and enough share but too few cases, are each
+// below the floor on their own. One floor doing the work of two would miss one.
+test("each half of the floor is enough to hold a judgement back", () => {
+  const { min_cases, min_share } = rules.evidence_floor;
+  const build = (n, total) => {
+    const { headers, records } = load("larkspur_snapshot.csv");
+    const rows = records.slice(0, total).map((r, i) => ({ ...r, reason: i < n ? "Billing" : "" }));
+    return runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+  };
+  // Comfortably over min_cases, far under min_share.
+  const wideThin = build(min_cases * 2, Math.ceil((min_cases * 2) / (min_share / 4)));
+  assert.equal(wideThin.checks.AI2.outcome, "too_few", "share floor did not bite");
+  // 100% share, under min_cases.
+  const narrowFull = build(min_cases - 1, min_cases - 1);
+  assert.equal(narrowFull.checks.AI2.outcome, "too_few", "count floor did not bite");
+});
+
+// B2 and B1 count how many values there are, so they keep their verdicts whatever the
+// floor says: 100% blank is B2's answer, not a reason it can't answer. Turning these
+// into "can't tell" would hide the very fault the floor exists to stop being hidden.
+test("the checks that count values still report their verdicts", () => {
+  for (const keep of [0, 2]) {
+    const r = thinReason(keep);
+    assert.equal(r.checks.B2.outcome, "fail", `B2 at ${keep}`);
+    assert.match(r.checks.B2.detail, /of cases sit in blank or catch-all reasons/);
+    assert.equal(r.checks.B1.outcome, "fail", `B1 at ${keep}`);
+  }
+  // And they declare no requires_values, which is what keeps the floor off them.
+  for (const id of ["B1", "B2"])
+    assert.equal(rules.checks.find((c) => c.id === id).requires_values, undefined, id);
+});
+
+test("signals grouped by reason report too few rather than a finding", () => {
+  const r = thinReason(2);
   for (const id of ["theme_movers", "self_help", "keep_human"]) {
     const s = r.signals.find((x) => x.id === id);
-    assert.equal(s.state, "locked", id);
-    assert.match(s.reason, /every value in it is blank/, id);
+    assert.equal(s.state, "too_few", id);
+    assert.match(s.reason, /on only 2 of 5,083 cases/, id);
     assert.equal(s.headline, undefined, `${id} must not report a headline`);
   }
 });
 
 // "Stable" and "0 candidate reasons" both read as findings. They were the absence of
 // anything to find, which is a different thing and has to say so.
-test("theme movers does not call an empty reason column stable", () => {
-  const s = emptyReason().signals.find((x) => x.id === "theme_movers");
-  assert.notEqual(s.headline, "Stable");
+test("theme movers does not call a nearly empty reason column stable", () => {
+  for (const keep of [0, 2]) {
+    const s = thinReason(keep).signals.find((x) => x.id === "theme_movers");
+    assert.notEqual(s.headline, "Stable");
+  }
 });
 
-test("the AI readiness verdict says the text is there and the reason is empty", () => {
-  const u = emptyReason().uses.find((x) => x.id === "ai");
-  assert.deepEqual(u.empty_fields, ["reason"]);
-  assert.match(u.empty_note, /contact reason/, "names the empty field");
-  assert.match(u.empty_note, /no values in it/);
-  assert.match(u.empty_note, /subject|description/, "says the wording is there");
+// The other way to have nothing to compare: plenty of reasons, none of them common
+// enough for a move in its share to mean anything. "Stable" is just as wrong here.
+test("theme movers reports too few when no reason reaches its case minimum", () => {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const spread = records.map((r, i) => ({ ...r, reason: `Reason ${i % 400}` }));
+  const r = runAudit({ records: spread, mapping: autoMap(headers, rules), headers, rules });
+  const min = rules.signals.find((x) => x.id === "theme_movers").params.min_cases_per_reason;
+  const s = r.signals.find((x) => x.id === "theme_movers");
+  assert.equal(s.state, "too_few", s.headline ?? s.reason);
+  assert.match(s.reason, new RegExp(`${min} or more cases`));
+  assert.match(s.reason, /The most common, "Reason \d+", has \d+\./, "says how many it had");
+  // The column itself is full, so this is the per-reason minimum biting, not the floor.
+  assert.equal(r.checks.B1.outcome, "pass");
+});
+
+test("the AI readiness verdict says the text is there and the reason too thin", () => {
+  const u = thinReason(2).uses.find((x) => x.id === "ai");
+  assert.deepEqual(u.too_few_fields, ["reason"]);
+  assert.match(u.too_few_note, /contact reason/, "names the thin field");
+  assert.match(u.too_few_note, /only 2 of 5,083 cases/, "says how many");
+  assert.match(u.too_few_note, /subject|description/, "says the wording is there");
   assert.notEqual(u.outcome, "pass");
 });
 
-// A use whose fields all hold values says nothing, or the note becomes wallpaper.
-test("a use with nothing empty carries no empty note", () => {
+// A use whose declared fields all clear the floor says nothing, or the note is wallpaper.
+test("a use with nothing short carries no note", () => {
   const { report } = audit("history");
-  for (const u of report.uses) assert.equal(u.empty_note, undefined, u.id);
+  for (const u of report.uses) assert.equal(u.too_few_note, undefined, u.id);
+});
+
+// A share that rounds to 0.0% next to a count of 2 invites the reader to disbelieve
+// one of the two numbers.
+test("a share too small to print is not shown as zero", () => {
+  assert.match(thinReason(2).checks.AI2.detail, /under 0\.1%/);
 });
 
 // ------------------------------------------- 4. what an optional column is, and buys
@@ -1102,12 +1169,12 @@ test("the follow-up field says it wants the ID of the original case", () => {
 // on the use. Both the pass and the failure title are claims about the values, so on a
 // column with none they are each false: the blocker line read "Reasons describe teams,
 // not customers" about an export with no reasons in it at all.
-test("an empty column is not given a title that claims something about its values", () => {
-  const r = emptyReason();
+test("a column too thin to judge is not titled with a claim about its values", () => {
+  const r = thinReason(2);
   for (const id of ["B3", "AI2", "AI3", "AI5"]) {
     const def = rules.checks.find((c) => c.id === id);
-    assert.ok(def.empty_title, `${id} has no empty_title`);
-    assert.equal(r.checks[id].title, def.empty_title, id);
+    assert.ok(def.too_few_title, `${id} has no too_few_title`);
+    assert.equal(r.checks[id].title, def.too_few_title, id);
     assert.notEqual(r.checks[id].title, def.title, `${id} claims the pass case`);
     assert.notEqual(r.checks[id].title, def.failure_title, `${id} claims the failure case`);
   }
@@ -1160,4 +1227,133 @@ test("the polarity guard is declared, and only where polarity is the risk", () =
   for (const k of guarded)
     for (const w of rules.fields[k].guess_requires_word)
       assert.match(w, /^[a-z]+$/, `${k}: ${w} must be one lowercase word`);
+});
+
+// ------------------------------------------ the file in the bot slot is a bot export
+// B11 passed on the case export loaded into the bot slot. Bot-scope matching finds a
+// column for nearly every bot field in almost any export -- here bot_claimed_resolved
+// landed on a prose resolution note and bot_reopens on a CSAT score -- and the green
+// path asked only whether a linked-cases column existed. Nothing checked there was
+// anything to audit: 5,108 conversations, 0 claimed resolutions, green.
+const botSlot = (p) => ({ records: p.records, headers: p.headers,
+  mapping: mapColumns({ headers: p.headers, rules, scope: "bot", records: p.records }).map });
+
+function withBot(bot) {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  return runAudit({ records, mapping: autoMap(headers, rules), headers, bot, rules });
+}
+
+test("the case export in the bot slot is recognised as the same file", () => {
+  const cases = load("larkspur_snapshot.csv");
+  const r = withBot(botSlot(cases));
+  assert.equal(r.checks.B11.outcome, "warn");
+  assert.equal(r.checks.B11.bot_same_as_cases, true);
+  assert.equal(r.meta.bot_same_as_cases, true);
+  assert.equal(r.checks.B11.title, rules.checks.find((c) => c.id === "B11").same_file_title);
+  assert.match(r.checks.B11.detail, /same file as the case export/);
+  // And it is not reported as a usable basis for the audit.
+  assert.equal(r.resolution_audit.basis, "none");
+  assert.equal(r.uses.find((u) => u.id === "resolution_audit").outcome, "needs_human");
+});
+
+test("a file with no claimed resolutions cannot pass B11", () => {
+  const cases = load("larkspur_snapshot.csv");
+  // A row short, so the same-file branch cannot be what catches it.
+  const r = withBot(botSlot({ ...cases, records: cases.records.slice(0, -1) }));
+  assert.equal(r.meta.bot_same_as_cases, false, "must be caught on its own merits");
+  assert.equal(r.checks.B11.outcome, "too_few");
+  assert.equal(r.meta.bot_claimed, 0);
+  assert.match(r.checks.B11.detail, /nothing for the audit to check/);
+  assert.match(r.checks.B11.detail, /probably not one/, "says it probably isn't a bot export");
+  assert.equal(r.uses.find((u) => u.id === "resolution_audit").outcome, "needs_human");
+});
+
+// The guard must not cost a real bot export its verdict. Both demo bot files keep the
+// outcome they had, and the audit still runs on the one that can be audited.
+test("a genuine bot export still passes and is still audited", () => {
+  const full = withBot(botSlot(load("larkspur_bot_with_history.csv")));
+  assert.equal(full.checks.B11.outcome, "pass");
+  assert.equal(full.resolution_audit.basis, "case_links");
+  assert.ok(full.resolution_audit.claimed > 0, "claimed resolutions were counted");
+  assert.equal(full.meta.bot_claimed, full.resolution_audit.claimed, "one count, two readers");
+  assert.equal(full.uses.find((u) => u.id === "resolution_audit").outcome, "pass");
+
+  const snap = withBot(botSlot(load("larkspur_bot_snapshot.csv")));
+  assert.equal(snap.checks.B11.outcome, "warn");
+  assert.equal(snap.resolution_audit.basis, "account_and_timing");
+  assert.equal(snap.checks.B11.title, rules.checks.find((c) => c.id === "B11").warn_title,
+    "the amber that means account-and-timing keeps its own title");
+});
+
+// Same-file detection compares structure and three rows, so a file that merely looks
+// similar is judged on its own merits rather than dismissed.
+test("a different bot file is not mistaken for the case file", () => {
+  const cases = load("larkspur_snapshot.csv");
+  for (const f of ["larkspur_bot_snapshot.csv", "larkspur_bot_with_history.csv"])
+    assert.equal(looksLikeSameFile(cases.records, cases.headers, botSlot(load(f))), false, f);
+  // Identical content in a new array is still the same file.
+  const copy = { records: cases.records.map((r) => ({ ...r })), headers: [...cases.headers], mapping: {} };
+  assert.equal(looksLikeSameFile(cases.records, cases.headers, copy), true, "a copy is the same file");
+  // One changed cell in a checked row is not.
+  const edited = { ...copy, records: copy.records.map((r, i) => (i === 0 ? { ...r, case_id: "CHANGED" } : r)) };
+  assert.equal(looksLikeSameFile(cases.records, cases.headers, edited), false);
+});
+
+// ------------------------------------------------- which build produced this report
+// Three behaviour changes shipped under one engine/rules version pair, so a pasted
+// report could not say which build produced it. The versions are bumped by hand; what
+// is testable is that the report carries all three identifiers and that the build id
+// reaches it.
+test("the report says which engine, rules and build produced it", () => {
+  const { report } = audit("history");
+  assert.match(report.meta.engine, /^\d+\.\d+\.\d+$/, "engine version");
+  assert.match(String(report.meta.rules), /^\d+\.\d+\.\d+$/, "rules version");
+  assert.ok(report.meta.build, "no build id in the report");
+});
+
+// The committed build id must be the placeholder. A real SHA here would mean dist no
+// longer matches a fresh build, and the workflow's staleness gate would fail forever.
+test("the committed build id is a placeholder, not a commit", () => {
+  const compiled = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
+  assert.equal(compiled.meta.build, "unstamped");
+  assert.equal(audit("history").report.meta.build, "unstamped");
+});
+
+// The stamp has to run after the staleness check and before the upload. Reordering
+// these silently breaks either the gate or the traceability it exists to allow.
+test("the deploy workflow stamps the build after checking dist is fresh", () => {
+  const wf = readFileSync(new URL("../.github/workflows/pages.yml", import.meta.url), "utf8");
+  const stale = wf.indexOf("Fail if dist is stale");
+  const stamp = wf.indexOf("npm run stamp");
+  const upload = wf.indexOf("upload-pages-artifact");
+  assert.ok(stale > 0 && stamp > 0 && upload > 0, "a step is missing from the workflow");
+  assert.ok(stale < stamp, "stamping before the staleness check would break the check");
+  assert.ok(stamp < upload, "stamping after the upload would deploy an unstamped page");
+});
+
+// A signal state the panel doesn't know about renders as "On" with an empty headline,
+// which is how too_few first reached the page looking like a reported finding with
+// nothing in it. Both halves of that are asserted: the engine never reports a state
+// without something to show, and the panel handles every state the engine emits.
+test("a signal either reports a number or says why it cannot", () => {
+  for (const r of [thinReason(2), thinReason(0), audit("history").report, audit("comments").report]) {
+    for (const s of r.signals) {
+      if (s.state === "on" || s.state === "caution") {
+        assert.ok(s.headline, `${s.id} is ${s.state} with no headline`);
+      } else {
+        assert.ok(s.reason, `${s.id} is ${s.state} with no reason`);
+        assert.equal(s.headline, undefined, `${s.id} is ${s.state} but reports a headline`);
+      }
+    }
+  }
+});
+
+test("the page handles every signal state the engine can emit", () => {
+  const app = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  const seen = new Set();
+  for (const r of [thinReason(2), audit("history").report, audit("comments").report])
+    for (const s of r.signals) seen.add(s.state);
+  assert.ok(seen.size >= 3, `only saw ${[...seen]}`);
+  for (const state of seen)
+    assert.ok(app.includes(state), `src/app.js never mentions the signal state "${state}"`);
 });
