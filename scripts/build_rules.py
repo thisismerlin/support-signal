@@ -28,6 +28,16 @@ for scope in ("case", "bot"):
             if seen.get(s, k) != k:
                 errs.append(f"synonym {s!r} claimed by both {seen[s]} and {k} in {scope} files")
             seen[s] = k
+# A field's level decides whether the collapser lets it vary between rows of one case.
+# A typo here would turn a comment column into a case-level field and report every
+# one-to-many export as a pile of conflicts.
+LEVELS = {"case", "comment"}
+errs += [f"field {k} level: {f['level']}" for k, f in r["fields"].items()
+         if f.get("level", "case") not in LEVELS]
+# A comment-level field only makes sense in a case export: the bot file has one row
+# per conversation and is never collapsed.
+errs += [f"field {k} is level: comment but file: {f.get('file')}" for k, f in r["fields"].items()
+         if f.get("level") == "comment" and f.get("file", "case") != "case"]
 # Value inference switches on these; a typo would silently stop a field being guessable.
 SHAPES = {"id", "date", "category", "text", "number", "flag"}
 errs += [f"field {k} shape: {f['shape']}" for k, f in r["fields"].items()
@@ -36,6 +46,12 @@ errs += [f"field {k} has no shape" for k, f in r["fields"].items() if "shape" no
 # Every vendor we claim to have sourced column names from must point at a real ref.
 errs += [f"column_name_sources {v} -> {k}" for v, k in r.get("column_name_sources", {}).items()
          if k not in r["refs"]]
+errs += [f"comment_column_sources {v} -> {k}" for v, k in r.get("comment_column_sources", {}).items()
+         if k not in r["refs"]]
+# Citing a source for comment columns while carrying no comment-level field would be
+# a citation for something that isn't there.
+if r.get("comment_column_sources") and not any(f.get("level") == "comment" for f in r["fields"].values()):
+    errs.append("comment_column_sources is set but no field is level: comment")
 # The engine reads these by name; a rename here must not fail silently at runtime.
 params = r.get("resolution_audit", {}).get("params", {})
 errs += [f"resolution_audit.params missing {p}" for p in
@@ -44,4 +60,6 @@ if errs:
     sys.exit("Rule errors:\n" + "\n".join(errs))
 (root / "dist").mkdir(exist_ok=True)
 (root / "dist/rules.json").write_text(json.dumps(r, default=str))
-print(f"rules {r['meta']['version']}: {len(r['checks'])} checks, {len(r['uses'])} uses, {len(r['signals'])} signals")
+comment_fields = sum(1 for f in r["fields"].values() if f.get("level") == "comment")
+print(f"rules {r['meta']['version']}: {len(r['checks'])} checks, {len(r['uses'])} uses, "
+      f"{len(r['signals'])} signals, {comment_fields} comment fields")

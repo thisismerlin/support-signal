@@ -8,6 +8,7 @@ from any real company's data.
 Run: python3 generator/generate_demo.py   (fixed seed, so output is identical every run)
 """
 import csv
+import hashlib
 import json
 import math
 from datetime import datetime, timedelta
@@ -438,5 +439,158 @@ stats["bot"] = dict(
             not_contradicted=sum(1 for t in claimed if t["audit_with_history"] == "not_contradicted"),
             cant_tell=0)),
 )
+# ---------------------------------------------------------------------------
+# Comment layer: the same cases as one row per case comment.
+#
+# A real helpdesk export is often one row per comment or email, with the case
+# fields repeated on every row. This writes that shape without changing a single
+# case: every comment is derived deterministically from the case row it belongs
+# to, with no random stream at all, so the files above stay byte-for-byte
+# identical and a case row repeated by the duplicate planter expands to an
+# identical set of comment rows. Those are true duplicates, which is the point:
+# a one-to-many export can still contain a row sent twice, and the two must not
+# be confused.
+#
+# Comment bodies are built from the case's own subject, never its description, so
+# the comment text introduces no word the churn flags were not already reading.
+# That is what lets the collapsed file be asserted to give the same verdicts.
+# ---------------------------------------------------------------------------
+COMMENT_COLS = ["comment_id", "comment_created_at", "comment_author_id", "comment_author_type",
+                "comment_public", "comment_body"]
+# last_update_at is dropped on purpose: with it gone, the engine has to derive the
+# last update from the latest public comment, which is the path worth testing.
+COMMENT_ROW_COLS = [c for c in SNAPSHOT_COLS if c != "last_update_at"] + COMMENT_COLS
+
+# Neutral operational wording. Deliberately free of any theme, product or billing
+# word, so a comment body adds nothing to the text the checks already read.
+AGENT_LINES = [
+    "Thanks for getting in touch, I have picked this up and am looking into it now.",
+    "I have checked the account settings and can see what you describe here.",
+    "Could you confirm whether this affects everyone or just the one person?",
+    "I have applied a change at our end, please try again and let me know.",
+    "Closing this off now, do come back to us if anything else comes up.",
+]
+CUSTOMER_LINES = [
+    "Thanks for coming back to me, I have tried that and it is still the same.",
+    "That has sorted it for us now, thanks very much for your help today.",
+    "Adding a bit more detail, this started happening earlier this week.",
+    "Any update on this one please, it is holding up the team at our end.",
+]
+INTERNAL_LINES = [
+    "Internal note: checked the logs at our end and nothing obvious is failing.",
+    "Internal note: flagging to the wider team in case this comes up again.",
+    "Internal note: customer has been chased once already, keeping an eye on it.",
+]
+
+
+def stable(*parts):
+    """A deterministic integer from the given strings. No random stream involved."""
+    return int(hashlib.md5("|".join(str(p) for p in parts).encode()).hexdigest()[:8], 16)
+
+
+def comment_rows_for(row):
+    """Every comment row for one case row, derived only from that row's own values."""
+    h = stable(row["case_id"])
+    n = 1 + h % 5                                   # 1 to 5 comments per case
+    created = parse(row["created_at"])
+    closed = parse(row["closed_at"]) if row["closed_at"] else None
+    # Spread the comments across the case's life; an open case gets a short tail.
+    span = (closed - created) if closed else timedelta(days=1 + (h % 7))
+    # Some cases end on an internal note, so the latest public comment is not the
+    # latest comment. That difference is what the derived last update is tested on.
+    ends_internal = n > 1 and h % 3 == 0
+    out = []
+    for i in range(n):
+        when = created + span * ((i + 1) / (n + 1))
+        from_customer = i % 2 == 1                  # the first comment is the agent's
+        internal = ends_internal and i == n - 1
+        if internal:
+            body = INTERNAL_LINES[(h + i) % len(INTERNAL_LINES)]
+            author, kind, public = row["owner"], "Agent", "No"
+        elif from_customer:
+            body = CUSTOMER_LINES[(h + i) % len(CUSTOMER_LINES)]
+            author, kind, public = row["account_id"], "Customer", "Yes"
+        else:
+            body = AGENT_LINES[(h + i) % len(AGENT_LINES)]
+            author, kind, public = row["owner"], "Agent", "Yes"
+        # The subject leads the first comment, so the customer's own wording survives
+        # in a file whose subject column a reader might not keep.
+        if i == 0 and row["subject"].strip():
+            body = f"{row['subject'].strip()}. {body}"
+        out.append(dict(row, comment_id=f"{row['case_id']}-C{i + 1}", comment_created_at=iso(when),
+                        comment_author_id=author, comment_author_type=kind,
+                        comment_public=public, comment_body=body))
+    return out
+
+
+comment_rows = [cr for row in cases for cr in comment_rows_for(row)]
+write(OUT / "larkspur_comment_rows.csv", COMMENT_ROW_COLS, comment_rows)
+
+# A second fixture, for duplicates inside a one-to-many export. Individual comment
+# rows are repeated here, not whole cases, and enough of them that the duplicate
+# share clears C4's amber band: a repeated row is still a fault when the file's
+# shape is one row per comment, and the shape must not excuse it.
+dup_every = 33
+comment_rows_dups = []
+for i, cr in enumerate(comment_rows):
+    comment_rows_dups.append(cr)
+    if i % dup_every == 0:
+        comment_rows_dups.append(dict(cr))
+write(OUT / "larkspur_comment_rows_with_duplicates.csv", COMMENT_ROW_COLS, comment_rows_dups)
+
+
+def comment_self_check():
+    """Re-derive the comment layer's claims from the written files alone."""
+    def read(name):
+        with open(OUT / name, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    snap = read("larkspur_snapshot.csv")
+    rows = read("larkspur_comment_rows.csv")
+    assert "last_update_at" not in rows[0], "the comment file must not carry last_update_at"
+    # Same cases, same case-level values, in the same order.
+    assert {r["case_id"] for r in rows} == {r["case_id"] for r in snap}
+    shared = [c for c in SNAPSHOT_COLS if c != "last_update_at"]
+    by_case = {}
+    for r in rows:
+        by_case.setdefault(r["case_id"], []).append(r)
+    for s in snap:
+        for r in by_case[s["case_id"]]:
+            for col in shared:
+                assert r[col] == s[col], (s["case_id"], col, r[col], s[col])
+    # A case row repeated by the duplicate planter must expand to identical rows.
+    seen, exact_dups = set(), 0
+    for r in rows:
+        k = tuple(r[c] for c in COMMENT_ROW_COLS)
+        if k in seen:
+            exact_dups += 1
+        seen.add(k)
+    # A duplicated case row appears twice, so its case id owns twice its comments:
+    # half of them are the redundant copies, and nothing else in the file is one.
+    want = sum(len(by_case[r["case_id"]]) // 2 for r in dups)
+    assert exact_dups == want, (exact_dups, want)
+    # At least one case must end on an internal note, or the derived last update
+    # would never differ from the latest comment and the test would prove nothing.
+    differs = 0
+    for cid, rs in by_case.items():
+        pub = [r for r in rs if r["comment_public"] == "Yes"]
+        if pub and max(r["comment_created_at"] for r in pub) != max(r["comment_created_at"] for r in rs):
+            differs += 1
+    assert differs > 0, "no case ends on an internal note"
+    # Counted after the redundant copies are set aside, which is what a reader of
+    # the collapsed report sees: a duplicated case row does not double its comments.
+    uniq = {}
+    for r in rows:
+        uniq.setdefault(r["case_id"], set()).add(tuple(r[c] for c in COMMENT_ROW_COLS))
+    per = sorted(len(v) for v in uniq.values())
+    return dict(rows=len(rows), cases=len(by_case), exact_duplicate_rows=exact_dups,
+                comments_per_case=dict(min=per[0], median=per[len(per) // 2], max=per[-1]),
+                cases_ending_on_internal_note=differs,
+                rows_with_duplicates=len(comment_rows_dups),
+                exact_duplicate_rows_with_duplicates=exact_dups + sum(
+                    1 for i in range(len(comment_rows)) if i % dup_every == 0))
+
+
+stats["comments"] = comment_self_check()
+
 (OUT / "generation_stats.json").write_text(json.dumps(stats, indent=2))
 print(json.dumps(stats, indent=2))

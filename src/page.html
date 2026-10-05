@@ -315,6 +315,14 @@ footer p { max-width: 86ch; }
 .map-alert, .map-hint { border-radius: 16px; padding: 14px 18px; font-size: 0.9375rem; }
 .map-alert { box-shadow: inset 0 0 0 1.5px var(--risk); color: var(--ink); }
 .map-hint { box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); }
+/* What was read: the file's shape, its counts, and anything dropped or derived. */
+.lvl { font: 500 0.75rem var(--f-body); color: var(--muted); margin-left: 6px; }
+.load { border-radius: 16px; padding: 14px 18px; font-size: 0.9375rem; box-shadow: inset 0 0 0 1px var(--rule); color: var(--ink); }
+.load h4 { font: 600 0.9375rem var(--f-body); margin: 0 0 6px; }
+.load ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.load li + li { margin-top: 3px; }
+.load-warn { box-shadow: inset 0 0 0 1.5px var(--warn); }
+.load-warn h4 { color: var(--warn); }
 /* Six uses share one row once the bot audit is in play, so the verdict type steps
    down to keep every verdict within two lines. Only while they are side by side:
    below 980px the panel stacks and each verdict has the full width. */
@@ -389,13 +397,14 @@ footer p { max-width: 86ch; }
     <div class="section-head"><h2 id="up-h">Check your own data.</h2>
       <p>Export cases as CSV from your helpdesk. Remove names, emails and any text you don't want analysed first. The file is read by this page only.</p></div>
     <div class="files">
-      <label for="file-cases">Cases (CSV)<span>One row per case. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
+      <label for="file-cases">Cases (CSV)<span>One row per case, or one row per case comment or email. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
       <label for="file-history">Change history (optional CSV)<span>Columns: case_id, changed_at, field, old_value, new_value.</span><input type="file" id="file-history" accept=".csv,text/csv"></label>
       <label for="file-bot">Bot conversations (optional CSV)<span>One row per AI conversation. Needed for the resolution audit.</span><input type="file" id="file-bot" accept=".csv,text/csv"></label>
     </div>
     <p class="status" id="upload-status" aria-live="polite">Choose a cases file to begin.</p>
     <p class="status" id="history-status" aria-live="polite"></p>
     <p class="status" id="bot-status" aria-live="polite"></p>
+    <div id="load-read" aria-live="polite"></div>
     <div id="mapping"></div>
     <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
   </section>
@@ -403,6 +412,7 @@ footer p { max-width: 86ch; }
   <div id="report">
     <section id="summary" class="summary" aria-labelledby="sum-h">
       <div class="section-head"><h2 id="sum-h">What this data can support</h2><p class="run-meta" id="run-meta"></p></div>
+      <div id="load-note"></div>
       <div class="stage"><div class="uses" id="uses"></div></div>
       <div class="fixfirst"><h3>Fix these first.</h3><ol class="fix" id="fix"></ol></div>
     </section>

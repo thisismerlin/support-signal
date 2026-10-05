@@ -3,18 +3,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
 const stats = JSON.parse(readFileSync(new URL("../data/generation_stats.json", import.meta.url)));
 const load = (f) => parseCSV(readFileSync(new URL(`../data/${f}`, import.meta.url), "utf8"));
 
+const FILES = { snapshot: "larkspur_snapshot.csv", history: "larkspur_with_history.csv",
+  comments: "larkspur_comment_rows.csv", comment_dups: "larkspur_comment_rows_with_duplicates.csv" };
+
 function audit(which, bot = null, withRules = rules) {
-  const { headers, records } = load(which === "snapshot" ? "larkspur_snapshot.csv" : "larkspur_with_history.csv");
-  const history = which === "snapshot" ? null : load("larkspur_history_log.csv").records;
+  const { headers, records } = load(FILES[which] || FILES.history);
+  const history = which === "history" ? load("larkspur_history_log.csv").records : null;
   const mapping = autoMap(headers, withRules);
-  return { report: runAudit({ records, mapping, history, bot, rules: withRules }), headers, mapping };
+  return { report: runAudit({ records, mapping, headers, history, bot, rules: withRules }), headers, mapping };
 }
 // A bot conversations export is mapped in bot scope, never case scope.
 function botFile(f) {
@@ -378,6 +381,292 @@ test("a same-theme case three hours after the bot ended is contradicted", () => 
   assert.equal(c["BOT-1"].why, "same_theme");
   assert.equal(c["BOT-2"].bucket, "not_contradicted", "a different theme at three hours is just another case");
   assert.equal(c["BOT-3"].why, "escalated", "inside the escalation window, theme isn't asked");
+});
+
+// ------------------------------------------------- one row per case comment
+// A real export is often one row per comment, with the case fields repeated. That
+// is a shape, not a fault: it must be named, collapsed, and then judged exactly as
+// the ordinary export is. The generator writes the same Larkspur cases in that
+// shape, so the two can be compared verdict for verdict.
+
+const commentRows = () => {
+  const { headers, records } = load(FILES.comments);
+  const mapping = autoMap(headers, rules);
+  return { headers, records, mapping, report: runAudit({ records, mapping, headers, rules }) };
+};
+
+test("the comment-rows export maps every column, comment fields included", () => {
+  const { headers, mapping } = commentRows();
+  assert.deepEqual(headers.filter((h) => !Object.values(mapping).includes(h)), []);
+  for (const k of ["comment_id", "comment_body", "comment_at", "comment_author", "comment_author_type", "comment_public"])
+    assert.ok(mapping[k], `${k} should map in a one-row-per-comment export`);
+  // The case's own created_at must not be stolen by the comment timestamp, or every
+  // duration in the report is measured from the wrong end.
+  assert.equal(mapping.created_at, "created_at");
+  assert.equal(mapping.comment_at, "comment_created_at");
+});
+
+test("the file's shape is reported as one row per comment, not as a failure", () => {
+  const { report } = commentRows();
+  const s = stats.comments;
+  assert.equal(report.load.shape, "one_row_per_comment");
+  assert.equal(report.meta.shape, "one_row_per_comment");
+  assert.equal(report.load.rows, s.rows);
+  assert.equal(report.load.cases, s.cases);
+  assert.equal(report.load.multi_row_cases > 0, true);
+  assert.deepEqual(report.load.comments_per_case, s.comments_per_case);
+  assert.deepEqual(report.load.conflicts, [], "the case fields are repeated, so nothing conflicts");
+  // C4 still reports, and still on duplicates only: the shape is not a duplicate.
+  assert.equal(report.checks.C4.outcome, expected.snapshot.checks.C4);
+  assert.equal(report.checks.C4.duplicate_rows, s.exact_duplicate_rows);
+  assert.match(report.checks.C4.detail, /one row per comment/);
+});
+
+test("collapsing gives the same verdicts as the ordinary export", () => {
+  const { report } = commentRows();
+  const want = expected.comments;
+  // Pinned against the snapshot's own expectations, so the two can never drift.
+  assert.deepEqual(want.checks, expected.snapshot.checks, "the comment file must expect the snapshot's verdicts");
+  for (const [id, outcome] of Object.entries(want.checks))
+    assert.equal(report.checks[id].outcome, outcome, `${id}: ${report.checks[id].detail}`);
+  for (const [id, outcome] of Object.entries(expected.snapshot.uses))
+    assert.equal(report.uses.find((u) => u.id === id).outcome, outcome, `use ${id}`);
+  for (const [id, state] of Object.entries(expected.snapshot.signals))
+    assert.equal(report.signals.find((s) => s.id === id).state, state, `signal ${id}`);
+  const holds = report.drivers.results.filter((r) => r.holds).map((r) => r.id).sort();
+  assert.deepEqual(holds, [...expected.snapshot.drivers_hold].sort());
+});
+
+test("the collapsed case count equals the ordinary export's", () => {
+  const { report } = commentRows();
+  const plain = audit("snapshot").report;
+  assert.equal(report.load.cases, plain.load.cases);
+  assert.equal(report.meta.cases, plain.meta.cases);
+  assert.ok(report.load.rows > plain.load.rows, "the comment file has more rows for the same cases");
+});
+
+// The point of reading the comment rows rather than discarding them.
+test("last update is derived from the latest public comment when no column carries it", () => {
+  const { headers, records, mapping, report } = commentRows();
+  assert.equal(mapping.last_update_at, undefined, "the fixture drops the column on purpose");
+  const d = report.load.derived.find((x) => x.field === "last_update_at");
+  assert.ok(d, "the derivation must be reported, not silent");
+  assert.equal(d.from, "latest_public_comment");
+  assert.equal(d.cases, report.load.cases);
+
+  // Re-derive it from the raw rows: the latest *public* comment, which for a case
+  // that ends on an internal note is not the latest comment.
+  // Read as UTC, the way the engine reads it. Date.parse would read these as local
+  // time and drift by an hour over summer, which would be the test's bug, not the
+  // engine's, and would hide a real one.
+  const utc = (s) => Date.parse(`${s.replace(" ", "T")}Z`);
+  const latest = new Map(), latestAny = new Map();
+  for (const r of records) {
+    const t = utc(r.comment_created_at);
+    if (r.comment_public === "Yes") latest.set(r.case_id, Math.max(latest.get(r.case_id) ?? 0, t));
+    latestAny.set(r.case_id, Math.max(latestAny.get(r.case_id) ?? 0, t));
+  }
+  const L = collapseRows({ records, headers, map: mapping, rules });
+  let checked = 0, differ = 0;
+  for (const c of L.cases) {
+    const want = latest.get(c.case_id);
+    const pub = c._comments.filter((cm) => cm.public === true);
+    const got = Math.max(...pub.map((cm) => cm._at));
+    assert.equal(got, want, c.case_id);
+    checked++;
+    if (want !== latestAny.get(c.case_id)) differ++;
+  }
+  assert.equal(checked, report.load.cases);
+  assert.equal(differ, stats.comments.cases_ending_on_internal_note);
+  assert.ok(differ > 0, "if no case ended on an internal note, public-only would prove nothing");
+});
+
+test("the text checks read comment bodies as well as subject and description", () => {
+  const { report } = commentRows();
+  // Every case here has at least one comment, so none is left without wording, and
+  // the detail line says how many only have it in the comments.
+  assert.equal(report.checks.AI1.outcome, expected.snapshot.checks.AI1);
+  assert.ok(report.checks.AI1.value >= audit("snapshot").report.checks.AI1.value,
+    "comment text can only add usable wording, never remove it");
+  assert.match(report.checks.AI1.detail, /only in the comment text/);
+});
+
+test("a comment body with no subject or description still counts as usable wording", () => {
+  const csv = parseCSV([
+    "case_id,created_at,closed_at,status,subject,description,comment_created_at,comment_body,comment_public",
+    "LS-1,2026-01-01 09:00,2026-01-02 09:00,Solved,Help,,2026-01-01 10:00,\"The payroll export failed this morning for our whole Leeds team\",Yes",
+  ].join("\n"));
+  const mapping = autoMap(csv.headers, rules);
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  // "Help" is junk and the description is empty, so only the comment can carry it.
+  assert.equal(report.checks.AI1.value, 1);
+  assert.match(report.checks.AI1.detail, /1 of them only in the comment text/);
+});
+
+// Duplicates inside a one-to-many export. The shape must not excuse a repeated row.
+test("a repeated comment row is still a duplicate in a one-row-per-comment export", () => {
+  const { headers, records } = load(FILES.comment_dups);
+  const mapping = autoMap(headers, rules);
+  const report = runAudit({ records, mapping, headers, rules });
+  const s = stats.comments;
+  assert.equal(report.load.shape, "one_row_per_comment");
+  assert.equal(report.load.rows, s.rows_with_duplicates);
+  assert.equal(report.load.duplicate_rows, s.exact_duplicate_rows_with_duplicates);
+  assert.equal(report.load.cases, s.cases, "duplicates must not invent cases");
+  assert.equal(report.checks.C4.outcome, expected.comment_duplicates.C4);
+  assert.equal(report.load.dropped[0].rows, s.exact_duplicate_rows_with_duplicates);
+});
+
+// Hand-built, so each of the three causes of a repeated case ID is present once and
+// can be told apart by name.
+test("true duplicates, comment rows and a case-level conflict are told apart", () => {
+  const csv = parseCSV([
+    "case_id,created_at,closed_at,status,owner,reason,comment_created_at,comment_body,comment_public",
+    // LS-1: three comment rows, case fields agreeing. The file's shape.
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-01 10:00,First reply to the customer about this,Yes",
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-02 10:00,Customer came back with more detail here,Yes",
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-03 10:00,Internal note before closing this one,No",
+    // LS-2: one row, then the very same row again. A redundant copy.
+    "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,2026-01-01 11:00,Only comment on this case at all,Yes",
+    "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,2026-01-01 11:00,Only comment on this case at all,Yes",
+    // LS-3: two comment rows whose owner disagrees. A conflict, named and counted.
+    "LS-3,2026-01-01 09:00,2026-01-05 09:00,Solved,Agent C,SSO,2026-01-01 12:00,Picked this up from the queue today,Yes",
+    "LS-3,2026-01-01 09:00,2026-01-05 09:00,Solved,Agent D,SSO,2026-01-02 12:00,Taking this over from my colleague,Yes",
+    // LS-4: case fields blanked on the second row, which is not disagreement.
+    "LS-4,2026-01-01 09:00,2026-01-03 09:00,Solved,Agent E,Add users,2026-01-01 13:00,Answered the question for them,Yes",
+    "LS-4,,,,,,2026-01-02 13:00,Confirmed they are happy with that,Yes",
+  ].join("\n"));
+  const mapping = autoMap(csv.headers, rules);
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  const L = report.load;
+
+  assert.equal(L.rows, 9);
+  assert.equal(L.cases, 4, "four case IDs, whatever the row count");
+  assert.equal(L.shape, "one_row_per_comment");
+  assert.equal(L.duplicate_rows, 1, "only LS-2's repeat is identical in every column");
+  assert.deepEqual(L.comments_per_case, { min: 1, median: 2, max: 3 });
+
+  // The conflict names the field and counts the cases, and only the real one.
+  assert.deepEqual(L.conflicts, [{ field: "owner", label: "Owner", cases: 1 }]);
+
+  // Blanked repeats take the first real value rather than becoming a conflict.
+  const byId = new Map(collapseRows({ records: csv.records, headers: csv.headers, map: mapping, rules })
+    .cases.map((c) => [c.case_id, c]));
+  assert.equal(byId.get("LS-4").status, "Solved");
+  assert.equal(byId.get("LS-4").reason, "Add users");
+  assert.equal(byId.get("LS-4")._comments.length, 2);
+  // First row in file order wins a genuine disagreement, and it is reported.
+  assert.equal(byId.get("LS-3").owner, "Agent C");
+
+  // One redundant copy in nine rows is 11%, well past C4's amber band.
+  assert.equal(report.checks.C4.outcome, "fail");
+  assert.equal(report.checks.C4.duplicate_rows, 1);
+  // Each case counted once: four cases, not nine.
+  assert.equal(report.meta.cases, 4);
+  assert.equal(report.meta.rows, 9);
+});
+
+// The page shows what was read twice: beside the file picker before a run, and
+// under the verdicts after one. They must be the same summary, or the first one
+// reports counts the second contradicts.
+test("the before-run summary matches the report's own, field for field", () => {
+  for (const f of Object.values(FILES)) {
+    const { headers, records } = load(f);
+    const mapping = autoMap(headers, rules);
+    const before = readSummary({ records, headers, map: mapping, rules });
+    const after = runAudit({ records, mapping, headers, rules }).load;
+    assert.deepEqual(before, after, f);
+    // Counts, not arrays: the page formats these with toLocaleString.
+    assert.equal(typeof before.cases, "number", f);
+    assert.equal(typeof before.rows, "number", f);
+    assert.equal(typeof before.comments, "number", f);
+    assert.ok(Array.isArray(before.comment_fields), f);
+  }
+});
+
+test("a one-row-per-case export is still reported as one row per case", () => {
+  for (const which of ["snapshot", "history"]) {
+    const { report } = audit(which);
+    assert.equal(report.load.shape, "one_row_per_case", which);
+    assert.equal(report.load.multi_row_cases, 0, which);
+    assert.deepEqual(report.load.conflicts, [], which);
+    assert.equal(report.load.comments, 0, which);
+    assert.deepEqual(report.load.derived, [], `${which}: nothing to derive without comments`);
+  }
+});
+
+// The polarity trap: Freshdesk publishes `private`, Zendesk publishes `public`, and
+// reading one as the other inverts every "latest public comment".
+test("an internal-note column is read as the opposite of a public column", () => {
+  const rows = (flagCol, a, b) => parseCSV([
+    `case_id,created_at,closed_at,status,comment_created_at,comment_body,${flagCol}`,
+    `LS-1,2026-01-01 09:00,2026-01-05 09:00,Solved,2026-01-02 09:00,The customer asked us about this one,${a}`,
+    `LS-1,2026-01-01 09:00,2026-01-05 09:00,Solved,2026-01-03 09:00,Note to self before closing this off,${b}`,
+  ].join("\n"));
+  // public=Yes then public=No: the latest public comment is the earlier row.
+  const asPublic = rows("comment_public", "Yes", "No");
+  // private=No then private=Yes: the same two comments, spelled the other way.
+  const asPrivate = rows("comment_private", "No", "Yes");
+  const run = (csv) => {
+    const mapping = autoMap(csv.headers, rules);
+    return { mapping, report: runAudit({ records: csv.records, mapping, headers: csv.headers, rules }) };
+  };
+  const p = run(asPublic), q = run(asPrivate);
+  assert.equal(p.mapping.comment_public, "comment_public");
+  assert.equal(q.mapping.comment_private, "comment_private");
+  for (const r of [p.report, q.report]) {
+    assert.equal(r.load.derived[0].from, "latest_public_comment");
+    assert.equal(r.load.derived[0].cases, 1);
+  }
+  const at = (m, csv) => collapseRows({ records: csv.records, headers: csv.headers, map: m.mapping, rules })
+    .cases[0]._comments.filter((c) => c.public === true).map((c) => c.at);
+  assert.deepEqual(at(p, asPublic), ["2026-01-02 09:00"]);
+  assert.deepEqual(at(q, asPrivate), ["2026-01-02 09:00"], "private=Yes must not read as public");
+});
+
+test("with no public or internal column, the last update says it used every comment", () => {
+  const csv = parseCSV([
+    "case_id,created_at,closed_at,status,comment_created_at,comment_body",
+    "LS-1,2026-01-01 09:00,2026-01-05 09:00,Solved,2026-01-02 09:00,The customer asked us about this one",
+    "LS-1,2026-01-01 09:00,2026-01-05 09:00,Solved,2026-01-03 09:00,Note to self before closing this off",
+  ].join("\n"));
+  const mapping = autoMap(csv.headers, rules);
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  const d = report.load.derived[0];
+  assert.equal(d.from, "latest_comment");
+  assert.match(d.detail, /Internal notes count towards it/);
+});
+
+// A mapped column stays mapped: deriving must never quietly overrule the export.
+test("a mapped last update column is used as given, not derived", () => {
+  const csv = parseCSV([
+    "case_id,created_at,closed_at,status,last_update_at,comment_created_at,comment_body,comment_public",
+    "LS-1,2026-01-01 09:00,2026-01-05 09:00,Solved,2026-02-01 09:00,2026-01-02 09:00,The customer asked us about this one,Yes",
+  ].join("\n"));
+  const mapping = autoMap(csv.headers, rules);
+  assert.equal(mapping.last_update_at, "last_update_at");
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.deepEqual(report.load.derived, []);
+  const c = collapseRows({ records: csv.records, headers: csv.headers, map: mapping, rules }).cases[0];
+  assert.equal(c.last_update_at, "2026-02-01 09:00");
+});
+
+// Comment columns are case-export columns. A bot file is one row per conversation
+// and is never collapsed, so no comment field may reach into bot scope.
+test("no comment field is offered a bot export's columns", () => {
+  for (const f of Object.values(BOT_FILES))
+    assert.deepEqual(Object.keys(autoMap(load(f).headers, rules, "bot")).filter((k) => k.startsWith("comment_")), [], f);
+  for (const [k, f] of Object.entries(rules.fields))
+    if (f.level === "comment") assert.equal(f.file ?? "case", "case", k);
+});
+
+// Every comment column name in the rules was read from a vendor's documentation.
+test("every comment column source points at a real reference", () => {
+  const sources = rules.comment_column_sources;
+  assert.ok(sources && Object.keys(sources).length >= 5, "at least five vendors");
+  for (const [vendor, ref] of Object.entries(sources))
+    assert.ok(rules.refs[ref], `${vendor} -> ${ref}`);
+  assert.ok(Object.values(rules.fields).some((f) => f.level === "comment"));
 });
 
 test("the engine reads no files, least of all the answer key", () => {

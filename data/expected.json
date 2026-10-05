@@ -22,6 +22,19 @@
     "drivers_hold": ["slow", "slow_passed"]
   },
 
+  "_comments": "larkspur_comment_rows.csv is the same cases as one row per case comment, with last_update_at dropped so it has to be derived. Collapsing must give the snapshot's verdicts exactly, so these are asserted to equal the snapshot block above rather than listed independently. Row and comment counts live in generation_stats.json.",
+  "comments": {
+    "checks": {
+      "C1": "pass", "C2": "not_in_export", "C3": "not_in_export", "C4": "warn",
+      "B1": "warn", "B2": "fail", "B3": "warn", "B4": "warn", "B5": "needs_human", "B6": "not_in_export",
+      "B7": "needs_human", "B8": "pass", "B9": "pass", "B10": "pass", "B11": "not_in_export",
+      "AI1": "pass", "AI2": "warn", "AI3": "needs_human", "AI4": "warn", "AI5": "pass", "AI6": "warn"
+    }
+  },
+
+  "_comment_duplicates": "larkspur_comment_rows_with_duplicates.csv repeats individual comment rows, not whole cases, until the duplicate share clears C4's amber band. The shape must not excuse a row sent twice.",
+  "comment_duplicates": { "C4": "fail" },
+
   "_bot": "The bot exports, each read alongside the case snapshot. Counts aren't repeated here: the tests read them from generation_stats.json, which the generator writes.",
   "bot": {
     "snapshot": { "B11": "warn", "use": "needs_human", "basis": "account_and_timing" },

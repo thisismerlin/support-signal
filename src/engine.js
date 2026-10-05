@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.3.0";
+export const ENGINE_VERSION = "0.4.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -255,30 +255,215 @@ export function describeThreshold(t, asPct = true) {
     : t.pass === 0 ? `Green at none, amber up to ${f(t.warn)}` : `Green at ${f(t.pass)} or less, amber up to ${f(t.warn)}`;
 }
 
-// ---------- build canonical cases ----------
-function canonical(records, map, rules) {
+// ---------- the file's shape, and collapsing it to one row per case ----------
+// A real export is often one row per case comment or email, with the case fields
+// repeated on every row. That is a shape, not a fault, so it is named rather than
+// failed, and the comment rows are read rather than thrown away.
+//
+// A repeated case ID has two possible causes and they are told apart by what varies:
+//   rows identical in every column            -> a redundant copy. A true duplicate.
+//   rows whose case-level columns agree        -> one row per comment. The file's shape.
+//   rows whose case-level columns disagree     -> a conflict, named and counted.
+// Collapsing happens before any check runs, so nothing downstream sees a raw row.
+
+const isCommentField = (f) => (f.level || "case") === "comment";
+
+// A field whose value belongs to the case, so it must agree across the case's rows.
+// Only mapped fields are judged: an unmapped column that varies is what a comment
+// export looks like, and guessing at its meaning would invent conflicts.
+const caseLevelKeys = (rules, map) => Object.keys(rules.fields)
+  .filter((k) => map[k] && !isCommentField(rules.fields[k]) && (rules.fields[k].file || "case") !== "bot");
+
+// Repeated case fields are sometimes blanked on all but the first row of a case.
+// Blanks are therefore not disagreement: the first real value wins, and only two
+// different real values are a conflict worth a warning.
+function agree(rows, read) {
+  const vals = [];
+  for (const r of rows) { const v = read(r); if (v !== undefined && v !== "") vals.push(v); }
+  if (!vals.length) return { value: "", conflict: false };
+  const distinct = new Set(vals);
+  return { value: vals[0], conflict: distinct.size > 1, distinct: [...distinct] };
+}
+
+export function collapseRows({ records, headers = null, map, rules }) {
   const ph = new Set(rules.placeholders.map((p) => p.toLowerCase()));
   const get = (r, k) => (map[k] ? String(r[map[k]] ?? "").trim() : undefined);
   const real = (v) => v !== undefined && !ph.has(String(v).trim().toLowerCase());
-  const cases = records.map((r) => {
-    const c = {};
-    for (const k of Object.keys(rules.fields)) c[k] = get(r, k);
-    c._created = parseDate(c.created_at);
-    c._closed = parseDate(c.closed_at);
-    c._isClosed = c.status !== undefined ? isClosedStatus(c.status) : c._closed != null;
-    c._days = c._created != null && c._closed != null ? (c._closed - c._created) / DAY : null;
-    c._owners = c.owner_changes !== undefined && c.owner_changes !== "" ? Number(c.owner_changes) : null;
-    return c;
+  const cols = headers && headers.length ? headers
+    : [...new Set(records.flatMap((r) => Object.keys(r)))];
+  const rowKey = (r) => JSON.stringify(cols.map((h) => String(r[h] ?? "")));
+
+  const commentKeys = Object.keys(rules.fields).filter((k) => isCommentField(rules.fields[k]));
+  const caseKeys = caseLevelKeys(rules, map);
+  const hasId = !!map.case_id;
+
+  // Group by case ID, first appearance first. A row with no case ID can't be
+  // grouped with anything, so it stays its own case and is counted separately
+  // rather than silently piled in with every other blank.
+  const groups = new Map();
+  let noIdRows = 0;
+  records.forEach((r, i) => {
+    const id = hasId ? get(r, "case_id") : "";
+    const key = hasId && id !== "" ? `id:${id}` : (noIdRows++, `row:${i}`);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
   });
-  return { cases, real, ph };
+
+  let duplicateRows = 0, commentRows = 0, multiRowCases = 0;
+  const conflictCount = new Map();
+  const cases = [];
+
+  for (const rows of groups.values()) {
+    // Drop redundant copies first, so an identical row repeated inside a comment
+    // export is a duplicate and not an extra comment.
+    const seenRow = new Set();
+    const kept = [];
+    for (const r of rows) {
+      const k = rowKey(r);
+      if (seenRow.has(k)) { duplicateRows++; continue; }
+      seenRow.add(k); kept.push(r);
+    }
+    if (kept.length > 1) { multiRowCases++; commentRows += kept.length; }
+
+    const c = {};
+    for (const k of Object.keys(rules.fields)) {
+      if (isCommentField(rules.fields[k])) { c[k] = get(kept[0], k); continue; }
+      if (!map[k]) { c[k] = undefined; continue; }
+      const a = agree(kept, (r) => get(r, k));
+      c[k] = a.value;
+      if (a.conflict && kept.length > 1) conflictCount.set(k, (conflictCount.get(k) || 0) + 1);
+    }
+
+    // Every row of the case is a comment when the export carries comment columns.
+    c._comments = commentKeys.length ? kept.map((r) => {
+      const at = get(r, "comment_at");
+      return {
+        id: get(r, "comment_id") || "",
+        at: at || "", _at: parseDate(at),
+        body: get(r, "comment_body") || "",
+        author: get(r, "comment_author") || "",
+        author_type: get(r, "comment_author_type") || "",
+        // One answer from two spellings of opposite polarity. Unknown stays null:
+        // an export with neither column says nothing about who could see what.
+        public: map.comment_public ? truthy(get(r, "comment_public"))
+          : map.comment_private ? !truthy(get(r, "comment_private")) : null,
+      };
+    }).filter((cm) => cm.at || cm.body) : [];
+    // Oldest first, by time where there is one and by file order where there isn't.
+    if (c._comments.some((cm) => cm._at != null)) {
+      c._comments.sort((a, b) => (a._at ?? Infinity) - (b._at ?? Infinity));
+    }
+    c._rows = kept.length;
+    cases.push(c);
+  }
+
+  const shape = multiRowCases > 0 ? "one_row_per_comment" : "one_row_per_case";
+  const conflicts = [...conflictCount].map(([field, n]) => ({
+    field, label: rules.fields[field].label, cases: n,
+  })).sort((a, b) => b.cases - a.cases || a.field.localeCompare(b.field));
+
+  return { cases, real, ph, shape, rows: records.length, duplicate_rows: duplicateRows,
+    comment_rows: commentRows, multi_row_cases: multiRowCases, no_id_rows: noIdRows,
+    conflicts, case_level_fields: caseKeys, comment_fields: commentKeys.filter((k) => map[k]) };
+}
+
+// Per-case values the checks and signals read. Derived after collapsing, so a case
+// built from twenty comment rows is indistinguishable here from one built from one.
+function deriveCase(c, { map, real }) {
+  c._created = parseDate(c.created_at);
+  c._closed = parseDate(c.closed_at);
+  c._isClosed = c.status !== undefined ? isClosedStatus(c.status) : c._closed != null;
+  c._days = c._created != null && c._closed != null ? (c._closed - c._created) / DAY : null;
+  c._owners = c.owner_changes !== undefined && c.owner_changes !== "" ? Number(c.owner_changes) : null;
+
+  // Comment text is customer and agent wording the case fields don't carry. One
+  // accessor, so the text checks and the theme signals can't drift apart.
+  c._commentText = c._comments.map((cm) => cm.body).filter(Boolean).join(" \n");
+  c._text = [c.subject, c.description, c._commentText].filter((s) => real(s) && s).join(" \n");
+
+  // The last update is the latest public comment. Derived only when no column was
+  // mapped, and only from comments we can date; which pool it came from is reported,
+  // because "latest comment of any kind" includes internal notes the customer never saw.
+  c._lastUpdateFrom = null;
+  if (!map.last_update_at && c._comments.length) {
+    const dated = c._comments.filter((cm) => cm._at != null);
+    const pub = dated.filter((cm) => cm.public === true);
+    const pool = pub.length ? pub : dated;
+    if (pool.length) {
+      const latest = pool.reduce((a, b) => (b._at > a._at ? b : a));
+      c.last_update_at = latest.at;
+      c._lastUpdateFrom = pub.length ? "latest_public_comment" : "latest_comment";
+    }
+  }
+  c._lastUpdate = parseDate(c.last_update_at);
+  return c;
+}
+
+// ---------- what was read ----------
+// Said plainly and before any verdict: how many rows arrived, how many cases they
+// collapsed to, how many comments came with them, and anything dropped or derived.
+//
+// One function, used by the audit and by the page's before-you-run summary, because
+// two of these drifting apart is how a page ends up reporting "NaN cases".
+function summariseLoad(L, U, rules) {
+  const perCase = U.map((c) => c._comments.length).filter((k) => k > 0);
+  const derived = [];
+  const lastFrom = U.filter((c) => c._lastUpdateFrom);
+  if (lastFrom.length) {
+    const fromPublic = lastFrom.filter((c) => c._lastUpdateFrom === "latest_public_comment").length;
+    derived.push({ field: "last_update_at", label: rules.fields.last_update_at.label, cases: lastFrom.length,
+      from: fromPublic === lastFrom.length ? "latest_public_comment"
+        : fromPublic ? "latest_public_comment_where_known" : "latest_comment",
+      detail: fromPublic === lastFrom.length
+        ? `Not in the export, so taken from the latest public comment on each of ${lastFrom.length.toLocaleString()} cases.`
+        : fromPublic
+          ? `Not in the export. Taken from the latest public comment where the export says which comments were public (${fromPublic.toLocaleString()} cases) and from the latest comment of any kind otherwise (${(lastFrom.length - fromPublic).toLocaleString()}).`
+          : `Not in the export, and no column says which comments were public, so taken from the latest comment of any kind on each of ${lastFrom.length.toLocaleString()} cases. Internal notes count towards it.` });
+  }
+  const dropped = [];
+  if (L.duplicate_rows) dropped.push({ reason: "Repeated an earlier row identically in every column", rows: L.duplicate_rows });
+  return {
+    shape: L.shape,
+    rows: L.rows, cases: U.length,
+    duplicate_rows: L.duplicate_rows,
+    comment_rows: L.comment_rows,
+    multi_row_cases: L.multi_row_cases,
+    no_id_rows: L.no_id_rows,
+    comments: perCase.reduce((a, b) => a + b, 0),
+    cases_with_comments: perCase.length,
+    comments_per_case: perCase.length
+      ? { min: Math.min(...perCase), median: median(perCase), max: Math.max(...perCase) } : null,
+    comment_fields: L.comment_fields,
+    conflicts: L.conflicts,
+    dropped, derived,
+  };
+}
+
+// The same summary, without running a single check. The page shows this beside the
+// file picker so what was read is said before anything is judged.
+export function readSummary({ records, headers = null, map, rules }) {
+  const L = collapseRows({ records, headers, map, rules });
+  const U = L.cases.map((c) => deriveCase(c, { map, real: L.real }));
+  return summariseLoad(L, U, rules);
 }
 
 // ---------- the audit ----------
-export function runAudit({ records, mapping, history = null, bot = null, rules, source = "upload" }) {
+export function runAudit({ records, mapping, headers = null, history = null, bot = null, rules, source = "upload" }) {
   const map = mapping;
-  const has = (k) => !!map[k];
-  const { cases, real } = canonical(records, map, rules);
-  const n = cases.length;
+  // Collapse first. Every check below sees one row per case, whatever shape arrived.
+  const L = collapseRows({ records, headers, map, rules });
+  const real = L.real;
+  const U = L.cases.map((c) => deriveCase(c, { map, real }));
+  const n = L.rows;        // rows read from the file
+  const u = U.length;      // distinct cases after collapsing
+
+  // A field the comment rows supplied is as present as one a column supplied, so
+  // `has` has to know about it: otherwise deriving the last update from comments
+  // would fill the value and still leave every signal that needs it locked.
+  const derivedFields = new Set();
+  if (!map.last_update_at && U.some((c) => c._lastUpdateFrom)) derivedFields.add("last_update_at");
+  const has = (k) => !!map[k] || derivedFields.has(k);
+
   const R = {};
   const checkDef = Object.fromEntries(rules.checks.map((c) => [c.id, c]));
   const set = (id, outcome, value, display, detail, extra = {}) => {
@@ -291,7 +476,10 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
     R[id] = { id, band: d.band, title, rule_title: d.title,
       outcome, value, display, detail, threshold: describeThreshold(d.threshold), ...extra };
   };
-  const fill = (k) => (has(k) && n ? cases.filter((c) => real(c[k])).length / n : null);
+  // Fill rates are per case, never per row: in a comment export a row count would
+  // weight a case with forty comments forty times.
+  const fill = (k) => (has(k) && u ? U.filter((c) => real(c[k])).length / u : null);
+  const ufill = fill;
 
   // history: owners per case and earliest change
   let hist = null;
@@ -305,7 +493,7 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
       byCase.get(h.case_id).push(h);
     }
     hist = { byCase, earliest };
-    for (const c of cases) {
+    for (const c of U) {
       const ev = byCase.get(c.case_id) || [];
       const ownerMoves = ev.filter((e) => /owner|assignee/i.test(e.field)).length;
       if (c._owners == null && ev.length) c._owners = 1 + ownerMoves;
@@ -328,25 +516,24 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
   // C3
   if (!hist) set("C3", "not_in_export", null, "No history", "No change log to measure.");
   else {
-    const covered = cases.filter((c) => c._created != null && c._created >= hist.earliest).length / n;
+    const covered = U.filter((c) => c._created != null && c._created >= hist.earliest).length / u;
     const start = new Date(hist.earliest).toISOString().slice(0, 10);
     set("C3", evalThreshold(covered, checkDef.C3.threshold), covered, pct(covered),
       `History starts ${start}. ${pct(1 - covered)} of cases were created before then and look as if they never moved.`);
   }
 
-  // C4
-  const ids = new Map();
-  for (const c of cases) ids.set(c.case_id, (ids.get(c.case_id) || 0) + 1);
-  const dupRows = [...ids.values()].filter((v) => v > 1).reduce((s, v) => s + v, 0);
+  // C4. A redundant copy is a row identical to an earlier one in every column. A
+  // repeated case ID whose rows differ is the file's shape, reported separately, so
+  // a one-row-per-comment export is not failed for being what it is.
+  const dupRows = L.duplicate_rows;
   const dupShare = n ? dupRows / n : 0;
+  const shapeNote = L.shape === "one_row_per_comment"
+    ? ` ${L.multi_row_cases.toLocaleString()} cases span more than one row: this export is one row per comment, not per case, and was collapsed before these checks ran.`
+    : "";
   set("C4", has("case_id") ? evalThreshold(dupShare, checkDef.C4.threshold) : "not_in_export", dupShare, pct(dupShare, 1),
-    dupRows ? `${dupRows} rows share a case ID with another row.` : "No repeated case IDs.");
-
-  // de-duplicated set for everything else
-  const seen = new Set();
-  const U = cases.filter((c) => (seen.has(c.case_id) ? false : (seen.add(c.case_id), true)));
-  const u = U.length;
-  const ufill = (k) => (has(k) && u ? U.filter((c) => real(c[k])).length / u : null);
+    (dupRows ? `${dupRows.toLocaleString()} rows repeat an earlier row identically in every column.`
+      : "No row repeats another identically.") + shapeNote,
+    { shape: L.shape, duplicate_rows: dupRows, rows: n, cases: u });
 
   // B1
   const routing = ["owner", "group", "reason"].filter(has);
@@ -434,10 +621,16 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
   // AI1
   const junk = new Set(rules.junk_text);
   const usable = (s) => s && !junk.has(s.toLowerCase().trim()) && s.trim().split(/\s+/).length >= 5;
-  if (!has("subject") && !has("description")) set("AI1", "not_in_export", null, "No text", "No subject or description column.");
+  // Comment bodies are customer wording too, and in a comment export they are
+  // usually the only place the customer's own words survive.
+  const hasText = has("subject") || has("description") || has("comment_body");
+  if (!hasText) set("AI1", "not_in_export", null, "No text", "No subject, description or comment body column.");
   else {
-    const share = U.filter((c) => usable(c.subject) || usable(c.description)).length / u;
-    set("AI1", evalThreshold(share, checkDef.AI1.threshold), share, pct(share), `${pct(share)} of cases have usable customer wording.`);
+    const viaComment = U.filter((c) => !usable(c.subject) && !usable(c.description) && usable(c._commentText)).length;
+    const share = U.filter((c) => usable(c.subject) || usable(c.description) || usable(c._commentText)).length / u;
+    set("AI1", evalThreshold(share, checkDef.AI1.threshold), share, pct(share),
+      `${pct(share)} of cases have usable customer wording.` +
+      (viaComment ? ` ${viaComment.toLocaleString()} of them only in the comment text, not in the subject or description.` : ""));
   }
 
   // AI2
@@ -536,10 +729,13 @@ export function runAudit({ records, mapping, history = null, bot = null, rules, 
   // ---------- drivers ----------
   const drivers = computeDrivers({ U, has, real, rules });
 
+  const load = summariseLoad(L, U, rules);
+
   return {
     meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status, source,
-      rows: n, cases: u, history_rows: history ? history.length : 0, bot_rows: botRows.length,
+      rows: n, cases: u, shape: L.shape, history_rows: history ? history.length : 0, bot_rows: botRows.length,
       generated: new Date().toISOString() },
+    load,
     checks: R, uses, signals, fixFirst, drivers, resolution_audit,
     vendor_questions: rules.vendor_questions,
   };
@@ -733,7 +929,8 @@ export function computeDrivers({ U, has, real }) {
     { id: "priority", label: "Any high or urgent priority case", fn: any((c) => /high|urgent/i.test(c.priority || "")), need: "priority" },
     { id: "phone", label: "Any phone contact", fn: any((c) => /phone|call/i.test(c.channel || "")), need: "channel" },
     { id: "other", label: "Any case logged as Other or blank", fn: any((c) => !real(c.reason)), need: "reason" },
-    { id: "billing", label: "Any billing or invoice case", fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject}`)) },
+    // Reads the comment text as well, through the same accessor the text checks use.
+    { id: "billing", label: "Any billing or invoice case", fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject} ${c._commentText}`)) },
     { id: "lowcsat", label: "Any CSAT of 1 or 2", fn: any((c) => Number(c.csat_score) >= 1 && Number(c.csat_score) <= 2), need: "csat_score" },
     { id: "reopen", label: "Any reopened case", fn: any((c) => Number(c.reopen_count) > 0), need: "reopen_count" },
     { id: "slow", label: "Any case open 30+ days", fn: any((c) => c._days != null && c._days > 30) },

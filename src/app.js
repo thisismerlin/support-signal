@@ -1,4 +1,5 @@
-// Support Signal page. Depends on engine functions (parseCSV, autoMap, runAudit) and RULES being in scope.
+// Support Signal page. Depends on engine functions (parseCSV, autoMap, mapColumns,
+// readSummary, runAudit) and RULES being in scope.
 (function () {
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -24,7 +25,8 @@
   function runDemo(kind) {
     const headers = kind === "demo-snapshot" ? demoParsed.headers.filter((h) => !SNAPSHOT_DROP.includes(h)) : demoParsed.headers;
     const mapping = autoMap(headers, RULES);
-    return runAudit({ records: demoParsed.records, mapping, history: kind === "demo-history" ? demoHistory : null,
+    // headers is passed so row identity is judged on the columns actually in play.
+    return runAudit({ records: demoParsed.records, mapping, headers, history: kind === "demo-history" ? demoHistory : null,
       bot: demoBot(DEMO_BOT[kind]), rules: RULES, source: kind });
   }
 
@@ -35,7 +37,14 @@
     $("#upload-panel").hidden = state.source !== "upload";
     if (!r) return;
     const src = { "demo-snapshot": "Demo company, snapshot export", "demo-history": "Demo company, export with history", upload: "Your export" }[state.source];
-    $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
+    $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${
+      r.meta.shape === "one_row_per_comment" ? ` from ${r.meta.rows.toLocaleString()} comment rows` : ""}${
+      r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
+    // Only worth a block when there is something to say beyond "one row per case".
+    const L = r.load;
+    const notable = L.shape === "one_row_per_comment" || L.duplicate_rows || L.no_id_rows
+      || L.conflicts.length || L.derived.length;
+    $("#load-note").innerHTML = notable ? loadBlock(L) : "";
     renderUses(r); renderFix(r); renderAudit(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
     $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
   }
@@ -224,6 +233,49 @@
     state.confidence = m.confidence;
     renderMapping();
     $("#upload-status").textContent = `${state.upload.records.length.toLocaleString()} rows, ${state.upload.headers.length} columns read. Check the mapping, then run.`;
+    renderRead();
+  }
+
+  // What was read, said before anything is judged: the file's shape, what it
+  // collapsed to, and anything dropped or disagreeing. Recomputed whenever the
+  // mapping changes, because the mapping is what decides which columns are
+  // case-level and so what counts as a disagreement.
+  function renderRead() {
+    const box = $("#load-read");
+    if (!state.upload) { box.innerHTML = ""; return; }
+    // The engine's own summary, so this says exactly what the report will say.
+    const L = readSummary({ records: state.upload.records, headers: state.upload.headers,
+      map: state.mapping, rules: RULES });
+    box.innerHTML = loadBlock(L, { beforeRun: true });
+  }
+
+  // One renderer for both places this is shown: beside the file picker before a
+  // run, and under the verdicts after one.
+  function loadBlock(L, { beforeRun = false } = {}) {
+    const n = (x) => Number(x || 0).toLocaleString();
+    const comment = L.shape === "one_row_per_comment";
+    const per = L.comments_per_case;
+    const bits = [];
+    bits.push(comment
+      ? `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>. The case fields repeat on every row, so this export is one row per comment or email, not one row per case. It was collapsed to one row per case before any check ran.</li>`
+      : `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>: one row per case${
+          L.duplicate_rows ? ", once the repeated rows below are set aside" : ""}.</li>`);
+    if (L.comments) {
+      bits.push(`<li><strong>${n(L.comments)} comments</strong> read across ${n(L.cases_with_comments)} cases${
+        per ? `, ${per.median} per case typically (${per.min} to ${per.max})` : ""}.</li>`);
+    } else if (comment && !L.comment_fields.length) {
+      bits.push(`<li>No comment columns were recognised, so the extra rows were collapsed but their contents couldn't be read. Map a comment body and time below to use them.</li>`);
+    }
+    if (L.duplicate_rows) bits.push(`<li><strong>${n(L.duplicate_rows)} rows dropped</strong>: each repeated an earlier row identically in every column.</li>`);
+    if (L.no_id_rows) bits.push(`<li><strong>${n(L.no_id_rows)} rows have no case ID.</strong> Each is counted as its own case, because there is nothing to group it by.</li>`);
+    for (const d of L.derived || []) bits.push(`<li><strong>${esc(d.label)} derived.</strong> ${esc(d.detail)}</li>`);
+    const conflicts = (L.conflicts || []).map((c) =>
+      `<li><strong>${esc(c.label)}</strong> differs between rows of <strong>${n(c.cases)} cases</strong>. The first row's value was used. If this column holds a value per comment rather than per case, map it to a comment field below instead.</li>`).join("");
+    return `<div class="load${conflicts ? " load-warn" : ""}">
+      <h4>${conflicts ? "What was read, and what disagreed" : "What was read"}</h4>
+      <ul>${bits.join("")}${conflicts}</ul>
+      ${beforeRun && comment ? `<p class="s muted">Nothing is thrown away: the comment text is read by the wording checks, and the last update is taken from the latest public comment when no column carries it.</p>` : ""}
+    </div>`;
   }
   async function onHistory() {
     const text = await readFile($("#file-history"));
@@ -256,12 +308,17 @@
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
     const pii = state.upload.headers.filter((h) => /e-?mail|phone|mobile|name$|first name|last name|address/i.test(h));
-    // Required fields first: nothing else matters until those are right.
+    // Required fields first: nothing else matters until those are right. Comment
+    // fields last, because they only apply to a one-row-per-comment export and
+    // mixing them in among the case fields makes both harder to scan.
+    const tier = ([k, f]) => (f.required ? 0 : (f.level || "case") === "comment" ? 2 : 1);
     const fields = Object.entries(RULES.fields).filter(([, f]) => (f.file || "case") !== "bot")
-      .sort((a, b) => (b[1].required ? 1 : 0) - (a[1].required ? 1 : 0));
+      .sort((a, b) => tier(a) - tier(b));
     const rows = fields.map(([k, f]) => {
       const st = mapState(k);
-      return `<tr class="map-${st}"><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td>
+      const mark = f.required ? " <span class='req'>required</span>"
+        : (f.level || "case") === "comment" ? " <span class='lvl'>per comment</span>" : "";
+      return `<tr class="map-${st}"><td>${esc(f.label)}${mark}</td>
         <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
         <td class="map-note">${esc(MAP_NOTE[st])}</td></tr>`;
     }).join("");
@@ -284,13 +341,14 @@
         state.mapping[k] = s.value; state.confidence[k] = "name";
       } else { delete state.mapping[k]; delete state.confidence[k]; }
       renderMapping();   // the How column and the alerts have to keep up
+      renderRead();      // and so does what was read: the mapping decides what conflicts
     }));
     $("#run-upload").disabled = false;
   }
   function runUpload() {
     try {
-      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, history: state.uploadHistory,
-        bot: state.uploadBot, rules: RULES, source: "upload" });
+      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, headers: state.upload.headers,
+        history: state.uploadHistory, bot: state.uploadBot, rules: RULES, source: "upload" });
       state.driversOn = false; render();
       $("#summary").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     } catch (e) { $("#upload-status").textContent = `Couldn't run the checks: ${e.message}. Check that the required columns are mapped.`; }

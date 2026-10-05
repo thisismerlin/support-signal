@@ -10,9 +10,9 @@
 #   lower:  pass if value <= pass, warn if <= warn, else fail
 
 meta:
-  version: 0.6.0
+  version: 0.7.0
   status: draft
-  updated: 2026-10-03
+  updated: 2026-10-05
   outcomes:
     pass: { label: Green, text: The data supports this. }
     warn: { label: Amber, text: Usable with care. The reason says what to watch. }
@@ -64,6 +64,28 @@ fields:
   csat_score:      { label: CSAT score, shape: number, synonyms: [csat, satisfaction, csat score, satisfaction rating, rating, conversation rating] }
   churned:         { label: Churned, shape: flag, synonyms: [churned, churn, cancelled, lost] }
   exit_event:      { label: Exit event, shape: category, synonyms: [exit event, cancellation, deregistration] }
+
+  # Comment-level fields, for an export with one row per case comment or email.
+  # `level: comment` marks a column whose value belongs to the row, not the case:
+  # the collapser lets these vary within a case without calling it a conflict, and
+  # everything else is a case-level field that must agree.
+  #
+  # Synonyms are the qualified forms only. Unqualified `body` and `created_at` are
+  # already claimed by description and created_at in case scope, and a joined export
+  # is exactly where that header is ambiguous, so the collapser reports the clash as
+  # a conflict naming the field and the mapping table lets it be moved by hand.
+  comment_id:          { label: Comment ID, shape: id, level: comment, synonyms: [comment id, note id, conversation part id, comment number, reply id] }
+  comment_body:        { label: Comment body, shape: text, level: comment, synonyms: [comment body, comment body text, comment text, comment plain body, comment html body, note body, note body text, hs note body, public comment body, reply body] }
+  comment_at:          { label: Comment time, shape: date, level: comment, synonyms: [comment at, comment created at, comment created, comment time, comment date, note created at, note at, hs timestamp, reply created at, conversation part created at] }
+  comment_author:      { label: Comment author, shape: category, level: comment, synonyms: [comment author, comment author id, comment user id, note author, note user id, hubspot owner id, comment created by, reply author] }
+  comment_author_type: { label: Comment author type, shape: category, level: comment, synonyms: [comment author type, author type, comment author kind, note author type, commenter type] }
+  # Public and internal are one question with two spellings of opposite polarity:
+  # Zendesk and Jira Service Management publish `public` (true means public),
+  # Freshdesk publishes `private` (true means internal). One field would read
+  # `private: true` as public and quietly invert every "latest public comment", so
+  # each polarity gets its own field and the engine folds them to one answer.
+  comment_public:      { label: Comment is public, shape: flag, level: comment, synonyms: [comment public, comment is public, is public comment, public comment, comment visible to customer, jsd public] }
+  comment_private:     { label: Comment is internal, shape: flag, level: comment, synonyms: [comment private, comment is private, comment internal, comment is internal, internal note, private note, note private, is internal comment] }
 
   # Bot conversation fields, for the resolution audit. Matched only against a bot
   # export, so these synonyms are free to repeat ones used by the case fields
@@ -121,11 +143,22 @@ checks:
     band: C
     dimension: uniqueness
     title: Each case appears once
-    failure_title: Duplicate cases found
-    metric: Share of rows whose case ID appears more than once
+    failure_title: Duplicate rows found
+    metric: Share of rows that repeat an earlier row identically in every column
     threshold: { dir: lower, pass: 0.0, warn: 0.01, provisional: true }
-    why: Duplicates inflate volume and distort every rate.
-    fix: Deduplicate on case ID and check whether the export joined a one-to-many table.
+    why: >-
+      A redundant copy inflates volume and distorts every rate. A repeated case ID on
+      its own does not: an export with one row per comment or email repeats the case
+      fields on every row by design, which is a shape, not a fault. Only rows
+      identical in every column are counted here; the shape is reported separately,
+      with the comment rows read rather than discarded.
+    fix: >-
+      Deduplicate on the whole row. If the case ID repeats but the rows differ,
+      nothing needs fixing here: the export is one row per comment, and it is read
+      as such rather than discarded.
+    note: >-
+      Measured on redundant copies only, so one case ID across twenty comment rows
+      counts as nothing to fix, while the same row sent twice counts once.
     refs: [dama-nl]
 
   - id: B1
@@ -424,6 +457,30 @@ column_name_sources:
   # Salesforce's shapes anyway (CaseNumber, CreatedDate, Priority__c, Date/Time
   # Opened all map correctly); only the vendor-specific synonyms are missing.
 
+# Where the comment-level column names came from. Same rule as above: each name was
+# read from the page named here. The attribute each vendor actually publishes is
+# recorded so a reader can check the claim rather than take it.
+#   zendesk    body, created_at, author_id, public ("true if a public comment;
+#              false if an internal note"). No author-type attribute: the comment
+#              carries author_id only, so comment_author_type has no Zendesk name.
+#   freshdesk  body, body_text, created_at, user_id, private ("Set to true if the
+#              note is private"). `incoming` was read and deliberately not adopted:
+#              it means the conversation appears to come from outside the web
+#              portal, which is not the same question as who wrote it.
+#   intercom   conversation_part: part_type, body, created_at, author; the author
+#              object carries type ("admin"; a Contact, Admin or Team).
+#   jira_service_management  CommentDTO: body, created, author, public
+#              ("Indicates whether the comment is public (true) or
+#              private/internal (false)").
+#   hubspot    note properties: hs_note_body, hs_timestamp, hubspot_owner_id.
+comment_column_sources:
+  zendesk: zendesk-ticket-comments
+  freshdesk: freshdesk-api
+  intercom: intercom-conversation-part
+  intercom_author: intercom-conversation-part-author
+  jira_service_management: jsm-request-comments
+  hubspot: hubspot-notes
+
 vendor_questions:
   - How do you define a resolution, and how do you count reopens?
   - Do you report containment separately from resolution?
@@ -454,5 +511,10 @@ refs:
   intercom-conversation: { title: "Intercom, Conversation object reference", url: "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation" }
   hubspot-tickets: { title: "HubSpot, Tickets API guide", url: "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide" }
   jira-issue-fields: { title: "Atlassian, Jira expressions type reference (Issue)", url: "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/" }
+  zendesk-ticket-comments: { title: "Zendesk, Ticket Comments API", url: "https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_comments/" }
+  intercom-conversation-part: { title: "Intercom, Conversation Part model", url: "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/conversation_part" }
+  intercom-conversation-part-author: { title: "Intercom, Conversation Part Author model", url: "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/conversation_part_author" }
+  jsm-request-comments: { title: "Atlassian, Jira Service Management request comments (CommentDTO)", url: "https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/" }
+  hubspot-notes: { title: "HubSpot, Notes engagement properties", url: "https://developers.hubspot.com/docs/guides/api/crm/engagements/notes" }
   mazor-response-bias: { title: "Mazor et al., survey response bias", url: "https://pmc.ncbi.nlm.nih.gov/articles/PMC1464019/" }
   catalog-confounding: { title: "Catalog of Bias, confounding", url: "https://catalogofbias.org/biases/confounding/" }

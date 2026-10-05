@@ -20,6 +20,15 @@ case volume looks like it causes churn. The page shows the raw odds for a dozen
 flags, then controls for product and case volume and lets you watch most of them
 fall away.
 
+**One row per comment.** Real exports are often one row per case comment or
+email, with the case fields repeated on every row. Support Signal names that as
+the file's shape rather than failing it as duplicates: it collapses to one row
+per case before any check runs, and tells you what it read — rows, cases,
+comments per case, and anything dropped or disagreeing. Only rows identical in
+every column count as duplicates. The comment rows are then used, not discarded:
+the wording checks read comment text, and the last update is taken from the
+latest public comment when no column carries it.
+
 **The bot resolution audit.** When an AI agent says it resolved something, the
 only honest check is what the customer did next. Given a bot conversations
 export, it sorts each claimed resolution into contradicted, not contradicted, or

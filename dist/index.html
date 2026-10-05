@@ -322,6 +322,14 @@ footer p { max-width: 86ch; }
 .map-alert, .map-hint { border-radius: 16px; padding: 14px 18px; font-size: 0.9375rem; }
 .map-alert { box-shadow: inset 0 0 0 1.5px var(--risk); color: var(--ink); }
 .map-hint { box-shadow: inset 0 0 0 1px var(--rule); color: var(--muted); }
+/* What was read: the file's shape, its counts, and anything dropped or derived. */
+.lvl { font: 500 0.75rem var(--f-body); color: var(--muted); margin-left: 6px; }
+.load { border-radius: 16px; padding: 14px 18px; font-size: 0.9375rem; box-shadow: inset 0 0 0 1px var(--rule); color: var(--ink); }
+.load h4 { font: 600 0.9375rem var(--f-body); margin: 0 0 6px; }
+.load ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.load li + li { margin-top: 3px; }
+.load-warn { box-shadow: inset 0 0 0 1.5px var(--warn); }
+.load-warn h4 { color: var(--warn); }
 /* Six uses share one row once the bot audit is in play, so the verdict type steps
    down to keep every verdict within two lines. Only while they are side by side:
    below 980px the panel stacks and each verdict has the full width. */
@@ -396,13 +404,14 @@ footer p { max-width: 86ch; }
     <div class="section-head"><h2 id="up-h">Check your own data.</h2>
       <p>Export cases as CSV from your helpdesk. Remove names, emails and any text you don't want analysed first. The file is read by this page only.</p></div>
     <div class="files">
-      <label for="file-cases">Cases (CSV)<span>One row per case. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
+      <label for="file-cases">Cases (CSV)<span>One row per case, or one row per case comment or email. Twelve months is a good start.</span><input type="file" id="file-cases" accept=".csv,text/csv"></label>
       <label for="file-history">Change history (optional CSV)<span>Columns: case_id, changed_at, field, old_value, new_value.</span><input type="file" id="file-history" accept=".csv,text/csv"></label>
       <label for="file-bot">Bot conversations (optional CSV)<span>One row per AI conversation. Needed for the resolution audit.</span><input type="file" id="file-bot" accept=".csv,text/csv"></label>
     </div>
     <p class="status" id="upload-status" aria-live="polite">Choose a cases file to begin.</p>
     <p class="status" id="history-status" aria-live="polite"></p>
     <p class="status" id="bot-status" aria-live="polite"></p>
+    <div id="load-read" aria-live="polite"></div>
     <div id="mapping"></div>
     <div><button type="button" class="btn" id="run-upload" disabled>Run the checks</button></div>
   </section>
@@ -410,6 +419,7 @@ footer p { max-width: 86ch; }
   <div id="report">
     <section id="summary" class="summary" aria-labelledby="sum-h">
       <div class="section-head"><h2 id="sum-h">What this data can support</h2><p class="run-meta" id="run-meta"></p></div>
+      <div id="load-note"></div>
       <div class="stage"><div class="uses" id="uses"></div></div>
       <div class="fixfirst"><h3>Fix these first.</h3><ol class="fix" id="fix"></ol></div>
     </section>
@@ -17424,11 +17434,11 @@ BOT-01499,2026-08-30 21:48,2026-08-30 21:59,ACC-0064,Small,Payroll Connect,Passw
 BOT-01500,2026-08-31 01:10,2026-08-31 01:12,ACC-0497,Small,Payroll Connect,Timesheet approval,Managers can't approve timesheets,Yes,0,
 </script>
 <script>
-const RULES = {"meta": {"version": "0.6.0", "status": "draft", "updated": "2026-10-03", "outcomes": {"pass": {"label": "Green", "text": "The data supports this."}, "warn": {"label": "Amber", "text": "Usable with care. The reason says what to watch."}, "fail": {"label": "Red", "text": "Don't build on this yet."}, "not_in_export": {"label": "Not in export", "text": "The export doesn't contain this. Not a judgement on your system."}, "needs_human": {"label": "Needs a human", "text": "Can't be judged automatically. The report says what to look at."}}}, "placeholders": ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"], "junk_text": ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"], "team_words": ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue", "transfer", "transferred", "backlog"], "fields": {"case_id": {"label": "Case ID", "shape": "id", "required": true, "synonyms": ["case id", "ticket id", "id", "case number", "ticket number", "casenumber", "conversation id", "hs object id", "issue key", "ticket key"]}, "created_at": {"label": "Created", "shape": "date", "required": true, "synonyms": ["created", "created at", "created date", "opened", "date opened", "createddate"]}, "closed_at": {"label": "Closed", "shape": "date", "required": true, "synonyms": ["closed", "closed at", "closed date", "solved at", "resolved at", "date closed", "closeddate", "resolution date", "resolutiondate"]}, "status": {"label": "Status", "shape": "category", "required": true, "synonyms": ["status", "state", "hs pipeline stage"]}, "owner": {"label": "Owner", "shape": "category", "synonyms": ["owner", "assignee", "agent", "case owner", "assigned to", "ownerid", "assignee id", "responder id", "admin assignee id"]}, "group": {"label": "Group or queue", "shape": "category", "synonyms": ["group", "queue", "team", "department", "group id", "team assignee id"]}, "reason": {"label": "Contact reason", "shape": "category", "synonyms": ["reason", "category", "case reason", "contact reason", "disposition", "type", "topic", "hs ticket category"]}, "subject": {"label": "Subject", "shape": "text", "synonyms": ["subject", "title", "summary"]}, "description": {"label": "Description", "shape": "text", "synonyms": ["description", "body", "first message", "details", "description text", "content"]}, "account_id": {"label": "Account", "shape": "id", "file": "both", "synonyms": ["account", "account id", "organization", "organisation", "company", "customer id", "accountid", "organization id", "company id"]}, "account_size": {"label": "Account size", "shape": "category", "file": "both", "synonyms": ["account size", "size", "tier", "plan", "seats band", "segment size"]}, "segment": {"label": "Product or segment", "shape": "category", "file": "both", "synonyms": ["product", "segment", "product line", "region"]}, "channel": {"label": "Channel", "shape": "category", "synonyms": ["channel", "origin", "via", "source"]}, "priority": {"label": "Priority", "shape": "category", "synonyms": ["priority", "severity", "hs ticket priority"]}, "reopen_count": {"label": "Reopens", "shape": "number", "synonyms": ["reopens", "reopen count", "times reopened"]}, "follow_up_of": {"label": "Follow-up of", "shape": "id", "synonyms": ["follow up of", "follow-up of", "parent case", "related case"]}, "escalated": {"label": "Escalated flag", "shape": "flag", "synonyms": ["escalated", "is escalated", "isescalated", "fr escalated"]}, "owner_changes": {"label": "Owners count", "shape": "number", "synonyms": ["owner changes", "assignee stations", "assignees", "owner count"]}, "group_changes": {"label": "Groups count", "shape": "number", "synonyms": ["group changes", "group stations", "groups", "queue changes"]}, "wait_time": {"label": "Customer wait time", "shape": "number", "synonyms": ["requester wait minutes", "requester wait time", "on hold time", "pending time", "wait time", "wait minutes"]}, "resolution_note": {"label": "Resolution note", "shape": "text", "synonyms": ["resolution", "resolution note", "solution", "resolution notes", "close notes"]}, "linked_article": {"label": "Linked article", "shape": "id", "synonyms": ["article", "linked article", "kb article", "macro", "knowledge article"]}, "last_update_at": {"label": "Last update", "shape": "date", "synonyms": ["last update", "last updated", "last public update", "updated at", "last modified", "updated"]}, "csat_score": {"label": "CSAT score", "shape": "number", "synonyms": ["csat", "satisfaction", "csat score", "satisfaction rating", "rating", "conversation rating"]}, "churned": {"label": "Churned", "shape": "flag", "synonyms": ["churned", "churn", "cancelled", "lost"]}, "exit_event": {"label": "Exit event", "shape": "category", "synonyms": ["exit event", "cancellation", "deregistration"]}, "bot_conversation_id": {"label": "Bot conversation ID", "shape": "id", "file": "bot", "synonyms": ["bot conversation id", "conversation id", "bot chat id", "chat id", "session id"]}, "bot_started_at": {"label": "Bot conversation started", "shape": "date", "file": "bot", "synonyms": ["started at", "bot started at", "conversation started at"]}, "bot_ended_at": {"label": "Bot conversation ended", "shape": "date", "file": "bot", "synonyms": ["ended at", "bot ended at", "conversation ended at"]}, "bot_intent": {"label": "Bot intent", "shape": "category", "file": "bot", "synonyms": ["intent", "bot intent", "detected intent", "detected theme"]}, "bot_claimed_resolved": {"label": "Bot claimed resolved", "shape": "flag", "file": "bot", "synonyms": ["claimed resolved", "bot claimed resolved", "claimed resolution"]}, "bot_customer_message": {"label": "Customer message", "shape": "text", "file": "bot", "synonyms": ["customer message", "first message", "customer wording", "utterance"]}, "bot_reopens": {"label": "Bot conversation reopens", "shape": "number", "file": "bot", "synonyms": ["reopens", "reopen count", "times reopened"]}, "bot_linked_cases": {"label": "Linked cases", "shape": "id", "file": "bot", "synonyms": ["linked case ids", "linked cases", "linked case id", "bot linked cases"]}}, "checks": [{"id": "C1", "band": "C", "dimension": "completeness", "title": "Core columns are present", "failure_title": "Core columns are missing", "metric": "Share of the four core fields (case ID, created, closed, status) found in the export", "threshold": {"dir": "higher", "pass": 1.0, "warn": 0.75}, "why": "Case ID, opened, closed and status underpin every other check and signal.", "fix": "Add the missing columns to the export. All major helpdesks have them as standard fields.", "refs": ["dama-nl"]}, {"id": "C2", "band": "C", "dimension": "completeness", "title": "Case history is available", "failure_title": "Only a final-state snapshot", "metric": "History file present (green), count columns only (amber), neither (not in export)", "why": "Without history you can't see transfers, reopens or how long cases sat with each team. Standard CSV exports usually leave it out.", "fix": "In Zendesk, add ticket metrics fields or pull ticket audits through the API. In Salesforce, turn on field history for Owner and Status and export Case History.", "refs": ["zendesk-exports", "freshdesk-export", "zendesk-ticket-metrics"]}, {"id": "C3", "band": "C", "dimension": "timeliness", "title": "History covers the period analysed", "failure_title": "History is shorter than the period analysed", "metric": "Share of cases created after history tracking began", "threshold": {"dir": "higher", "pass": 0.95, "warn": 0.6, "provisional": true}, "why": "Salesforce keeps field history for up to 18 months, and only from when tracking was switched on. Older cases look as if they never moved.", "fix": "Limit analysis to the period history covers, or extend retention.", "refs": ["salesforce-field-history"]}, {"id": "C4", "band": "C", "dimension": "uniqueness", "title": "Each case appears once", "failure_title": "Duplicate cases found", "metric": "Share of rows whose case ID appears more than once", "threshold": {"dir": "lower", "pass": 0.0, "warn": 0.01, "provisional": true}, "why": "Duplicates inflate volume and distort every rate.", "fix": "Deduplicate on case ID and check whether the export joined a one-to-many table.", "refs": ["dama-nl"]}, {"id": "B1", "band": "B", "dimension": "completeness", "title": "Routing fields are genuinely filled", "failure_title": "Routing fields are mostly empty or placeholders", "metric": "Lowest real fill rate across owner, group and reason (placeholders like \"N/A\" and \"Other\" count as empty)", "threshold": {"dir": "higher", "pass": 0.9, "warn": 0.6, "provisional": true}, "why": "A field that is mostly \"N/A\" or \"Other\" is empty in practice, however full it looks.", "fix": "Make the field required at closure and remove placeholder defaults.", "refs": ["dama-nl"]}, {"id": "B2", "band": "B", "dimension": "validity", "title": "Reasons aren't dominated by a catch-all", "failure_title": "A catch-all reason swallows too many cases", "metric": "Share of cases whose reason is blank or a catch-all such as \"Other\" or \"General\"", "threshold": {"dir": "lower", "pass": 0.1, "warn": 0.2, "provisional": true}, "why": "Whatever sits in \"Other\" is invisible to reporting and to any AI trained on your reasons.", "fix": "Sample the catch-all, split its biggest themes into new reasons, and remove \"Other\" as a default.", "refs": ["spotsaas-disposition", "mosaic-categorisation"], "note": "Practitioner rules of thumb only. No research-grade threshold exists."}, {"id": "B3", "band": "B", "dimension": "consistency", "title": "Reason codes are a tidy set", "failure_title": "Reason codes have sprawled", "metric": "Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times", "why": "Duplicates like \"SSO\" and \"Single sign-on\" split one issue in two and make trends meaningless.", "fix": "Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.", "refs": ["supportbench-taxonomy", "xebia-contact-reasons"]}, {"id": "B4", "band": "B", "dimension": "consistency", "title": "Dates make sense", "failure_title": "Impossible dates found", "metric": "Share of cases closed before they were created, or with a status that contradicts the close date", "threshold": {"dir": "lower", "pass": 0.005, "warn": 0.02, "provisional": true}, "why": "One bad date can wreck an average resolution time.", "fix": "Find the automation or import writing bad dates, and exclude affected cases until fixed.", "refs": ["dama-nl"]}, {"id": "B5", "band": "B", "dimension": "validity", "title": "Resolution time separates customer wait", "failure_title": "Can't separate customer wait from agent work", "metric": "A customer-wait or on-hold time field is present and filled", "why": "Zendesk's full resolution time includes pending time and runs to the last solve. Without a wait field, \"slow\" may just mean \"waiting on the customer\".", "fix": "Add requester-wait or on-hold time to the export.", "refs": ["zendesk-durations"]}, {"id": "B6", "band": "B", "dimension": "validity", "title": "Reopens can be counted", "failure_title": "Reopens are invisible", "metric": "Reopen count present (amber); plus follow-up cases linked to originals (green)", "why": "In Zendesk, a reply to a closed ticket creates a new follow-up ticket instead of a reopen, so reopen counts miss repeat contacts.", "fix": "Include the reopens metric and link follow-up tickets to their originals.", "refs": ["zendesk-follow-up"]}, {"id": "B7", "band": "B", "dimension": "validity", "title": "The escalation flag is actually used", "failure_title": "The escalation flag is rarely set", "metric": "Share of cases flagged, compared with the share that history shows moving to engineering or tier 3", "why": "A flag that's almost never set usually means nobody sets it, not that nothing happens.", "fix": "Set the flag automatically from the routing event, or stop reporting on it.", "refs": []}, {"id": "B8", "band": "B", "dimension": "completeness", "title": "Survey scores are linked to cases", "failure_title": "Few closed cases carry a survey score", "metric": "Share of closed cases with a CSAT score", "threshold": {"dir": "higher", "pass": 0.15, "warn": 0.05, "provisional": true}, "why": "Survey analysis needs enough linked responses, and the happiest customers answer most, so low coverage hides real gaps.", "fix": "Link survey responses to case IDs; compare who responds with who doesn't before modelling.", "refs": ["mazor-response-bias"]}, {"id": "B9", "band": "B", "dimension": "completeness", "title": "Cases link to accounts", "failure_title": "Many cases have no account", "metric": "Share of cases with a real account ID", "threshold": {"dir": "higher", "pass": 0.95, "warn": 0.8, "provisional": true}, "why": "Churn analysis happens at account level. Unlinked cases drop out silently.", "fix": "Require an account on every case, or match on contact email domain.", "refs": ["dama-nl"]}, {"id": "B10", "band": "B", "dimension": "completeness", "title": "You can control for account size or product", "failure_title": "Nothing to control for", "metric": "Account size or product/segment present and filled on 90% of cases", "threshold": {"dir": "higher", "pass": 0.9, "warn": 0.6, "provisional": true}, "why": "Bigger, busier accounts raise more cases and behave differently. Without a size or segment field, every apparent driver is confounded.", "fix": "Join account size band and product to the export.", "refs": ["catalog-confounding"]}, {"id": "AI1", "band": "B", "dimension": "completeness", "title": "Customers' words are captured", "failure_title": "Little usable customer text", "metric": "Share of cases whose subject or description has five or more words and isn't a stock phrase", "threshold": {"dir": "higher", "pass": 0.8, "warn": 0.5, "provisional": true}, "why": "Without the customer's own words you can't discover what they want, the first job of any AI self-help project.", "fix": "Include the first customer message. Zendesk CSV exports leave out descriptions, so use JSON or the API.", "refs": ["zendesk-exports"]}, {"id": "AI2", "band": "B", "dimension": "validity", "title": "Reasons describe customer needs", "failure_title": "Reasons describe teams, not customers", "metric": "Share of volume whose reason names a team, tier or process (\"Tier 2\", \"Escalated\")", "threshold": {"dir": "lower", "pass": 0.1, "warn": 0.3, "provisional": true}, "why": "A reason like \"Tier 2\" tells a bot nothing about what the customer wanted. AI intents must describe the customer's need.", "fix": "Keep routing in routing fields and rewrite reasons as customer needs.", "refs": ["zendesk-custom-intents"]}, {"id": "AI3", "band": "B", "dimension": "consistency", "title": "Reasons don't overlap", "failure_title": "Reasons overlap", "metric": "Reviewed by a person in this version; the report lists near-duplicate reasons to start from", "why": "Zendesk warns that overlapping intents cause \"low-confidence or wrong topic detection\".", "fix": "Merge or redefine overlapping reasons so each covers one need.", "refs": ["zendesk-custom-intents", "xebia-contact-reasons"]}, {"id": "AI4", "band": "B", "dimension": "completeness", "title": "Solutions are recorded", "failure_title": "Few cases record how they were solved", "metric": "Share of closed cases with a resolution note or linked article", "threshold": {"dir": "higher", "pass": 0.7, "warn": 0.3, "provisional": true}, "why": "AI agents answer from written knowledge. If solutions live only in agents' heads, there's nothing to ground an answer in.", "fix": "Require a resolution note or linked article at closure, and mine macros for missing articles.", "refs": ["intercom-knowledge-sources", "intercom-content", "agentforce-knowledge"]}, {"id": "AI5", "band": "A", "dimension": "fit for use", "title": "Demand is concentrated enough to automate", "failure_title": "Demand is too scattered to automate easily", "metric": "Share of cases with a real reason that fall in the ten most common reasons", "threshold": {"dir": "higher", "pass": 0.5, "warn": 0.3, "provisional": true}, "why": "Automation pays back fastest on frequent, repeated questions.", "fix": "Start with the top themes and leave the long tail to people.", "refs": []}, {"id": "AI6", "band": "A", "dimension": "fit for use", "title": "Volume meets published vendor minimums", "failure_title": "Volume is below some vendors' published minimums", "metric": "Total cases against Forethought's published 20,000+ historical tickets and 2,000+ email or chat tickets a month", "why": "Some vendors need a minimum history to train. Most don't publish one, so ask.", "fix": "Ask each vendor for its minimum before a pilot.", "refs": ["forethought-faq"]}, {"id": "B11", "band": "B", "dimension": "completeness", "title": "Bot conversations can be linked to later cases", "failure_title": "Bot conversations aren't linked to later cases", "warn_title": "Bot conversations can only be matched by account and timing", "metric": "Follow-up case IDs on each conversation (green); account plus conversation start and end times, so returns have to be matched (amber); neither in the export (not in export)", "why": "The audit asks what happened after the bot claimed a resolution. Without a way to reach from a conversation to the cases that followed it, a claimed resolution can't be confirmed or contradicted, and silence can't be told apart from success.", "fix": "Export the follow-up case IDs on each conversation. Failing that, export the account ID with the conversation's start and end times, which lets returns be matched by account and timing.", "refs": ["zendesk-follow-up", "dama-nl"], "outcomes": {"pass": "Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.", "warn": "Conversations carry an account and start and end times, but no case links. Matching returns by timing alone isn't supported yet, so this export can't be audited. Every claimed resolution is reported as can't tell; export the follow-up case IDs and the audit runs.", "not_in_export": "This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files."}, "note": "The engine reports these words verbatim, and uses warn_title on the amber path, because the account and the timings are present and \"aren't linked\" would misdescribe the export. Only the green path is implemented. Amber is a limit of this tool, not a flaw in the data, so the use reports \"needs a human\" rather than amber \"usable with care\"."}], "uses": [{"id": "resolution", "title": "Resolution time analysis", "required": ["C1", "C4", "B4"], "optional": ["B5", "B6"]}, {"id": "transfers", "title": "Transfers and ownership", "required": ["C1", "C2"], "optional": ["C3", "B7"]}, {"id": "csat", "title": "CSAT and survey analysis", "required": ["C1", "B8"], "optional": ["B2"]}, {"id": "churn", "title": "Linking cases to churn", "required": ["C1", "B9", "B10"], "optional": ["C2"]}, {"id": "ai", "title": "AI self-help readiness", "required": ["AI1", "AI2", "AI4"], "optional": ["AI3", "AI5", "AI6", "B2", "B3"]}, {"id": "resolution_audit", "title": "Bot resolution audit", "required": ["B11"], "optional": [], "needs_file": "bot"}], "signals": [{"id": "slow_passed", "title": "Slow and passed-around cases", "unlocked_by_uses": ["transfers", "resolution"], "params": {"slow_days": 30, "min_owners": 3, "provisional": true}, "shows": "Cases open more than 30 days with three or more owners, by group", "disclaimer": "The one service signal worth watching. Not proof that it causes churn."}, {"id": "handoff", "title": "Handed off versus held", "unlocked_by_uses": ["transfers"], "shows": "Resolution time and CSAT for cases kept by one owner versus handed on", "disclaimer": "Harder cases get handed on, so this isn't a fair comparison of teams."}, {"id": "theme_movers", "title": "Theme movers", "unlocked_by_any_check": ["AI1", "B2"], "shows": "Reasons rising or falling in the last quarter against the previous nine months", "disclaimer": "Shows what is moving, not why."}, {"id": "open_risk", "title": "Open work at risk", "unlocked_by_uses": ["resolution"], "requires_fields": ["last_update_at"], "shows": "Open cases older than 70% of closed cases took to resolve", "disclaimer": "Not a prediction of which customers will leave."}, {"id": "exit_events", "title": "Exit events", "requires_fields": ["exit_event"], "shows": "Cancellations and similar events logged in cases, for whoever owns retention", "disclaimer": "A commercial warning recorded in support, not something support caused."}, {"id": "self_help", "title": "AI self-help candidates", "unlocked_by_uses": ["ai"], "shows": "Reasons that are frequent, quick, single-owner and documented", "disclaimer": "A shortlist to test, not a deflection forecast."}, {"id": "keep_human", "title": "Keep-a-human themes", "unlocked_by_uses": ["ai", "transfers"], "shows": "Reasons with long resolution times or many owners", "disclaimer": "Where automation is most likely to frustrate customers."}], "resolution_audit": {"params": {"provisional": true, "return_windows_days": [7, 14, 30], "escalation_within_minutes": 60, "normalise_reasons": true}, "disclaimer": "\"Not contradicted\" means silence, not success. It records only that no follow-up case appeared in the window: the customer may have given up, gone elsewhere, or left. Never report it as a resolution rate."}, "column_name_sources": {"zendesk": "zendesk-ticket-object", "freshdesk": "freshdesk-api", "intercom": "intercom-conversation", "hubspot": "hubspot-tickets", "jira_service_management": "jira-issue-fields"}, "vendor_questions": ["How do you define a resolution, and how do you count reopens?", "Do you report containment separately from resolution?", "What minimum ticket history and monthly volume do you need?", "Do you learn from our past tickets, our knowledge articles, or both?", "What happens when our reasons or tags overlap?", "Who grades the resolutions, you or us?"], "refs": {"dama-nl": {"title": "DAMA NL, Dimensions of Data Quality", "url": "https://dama-nl.org/wp-content/uploads/2020/09/DDQ-Dimensions-of-Data-Quality-Research-Paper-version-1.2-d.d.-3-Sept-2020.pdf"}, "zendesk-exports": {"title": "Zendesk, exporting ticket data", "url": "https://support.zendesk.com/hc/en-us/articles/4408886165402"}, "zendesk-ticket-metrics": {"title": "Zendesk, ticket metrics API", "url": "https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_metrics/"}, "zendesk-durations": {"title": "Zendesk, time duration metrics", "url": "https://support.zendesk.com/hc/en-us/articles/4408834848154-About-native-Support-time-duration-metrics"}, "zendesk-follow-up": {"title": "Zendesk, follow-up tickets", "url": "https://support.zendesk.com/hc/en-us/articles/8421655952026-Understanding-follow-up-tickets"}, "zendesk-custom-intents": {"title": "Zendesk, custom intents", "url": "https://support.zendesk.com/hc/en-us/articles/8718789695002-Personalizing-intelligent-triage-by-creating-custom-intents"}, "freshdesk-export": {"title": "Freshdesk, ticket export", "url": "https://support.freshdesk.com/support/solutions/articles/225158"}, "salesforce-field-history": {"title": "Salesforce, field history tracking", "url": "https://developer.salesforce.com/docs/atlas.en-us.securityImplGuide.meta/securityImplGuide/tracking_field_history.htm"}, "spotsaas-disposition": {"title": "Spotsaas, disposition taxonomy", "url": "https://www.spotsaas.com/resources/call-center-software/disposition-taxonomy"}, "mosaic-categorisation": {"title": "Mosaic, ticket categorisation", "url": "https://getmosaic.ai/blog/support-ticket-categorization-best-practices"}, "supportbench-taxonomy": {"title": "Supportbench, support taxonomy", "url": "https://www.supportbench.com/building-support-taxonomy-tag-tickets-product-insights/"}, "xebia-contact-reasons": {"title": "Xebia, categorising contact reasons", "url": "https://xebia.com/blog/four-practical-tips-on-how-to-categorize-contact-reasons/"}, "intercom-knowledge-sources": {"title": "Intercom, knowledge sources for AI agents", "url": "https://www.intercom.com/help/en/articles/9440354-knowledge-sources-to-power-ai-agents-and-self-serve-support"}, "intercom-content": {"title": "Intercom, optimising content for Fin", "url": "https://www.intercom.com/help/en/articles/7860255-optimizing-content-for-fin"}, "agentforce-knowledge": {"title": "Salesforce, Agentforce and Knowledge", "url": "https://help.salesforce.com/s/articleView?id=004333412&language=en_US&type=1"}, "forethought-faq": {"title": "Forethought FAQ", "url": "https://forethought.ai/faq"}, "zendesk-ticket-object": {"title": "Zendesk, Ticket object reference", "url": "https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/"}, "freshdesk-api": {"title": "Freshdesk, API reference (Tickets)", "url": "https://developers.freshdesk.com/api/"}, "intercom-conversation": {"title": "Intercom, Conversation object reference", "url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation"}, "hubspot-tickets": {"title": "HubSpot, Tickets API guide", "url": "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide"}, "jira-issue-fields": {"title": "Atlassian, Jira expressions type reference (Issue)", "url": "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/"}, "mazor-response-bias": {"title": "Mazor et al., survey response bias", "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC1464019/"}, "catalog-confounding": {"title": "Catalog of Bias, confounding", "url": "https://catalogofbias.org/biases/confounding/"}}};
+const RULES = {"meta": {"version": "0.7.0", "status": "draft", "updated": "2026-10-05", "outcomes": {"pass": {"label": "Green", "text": "The data supports this."}, "warn": {"label": "Amber", "text": "Usable with care. The reason says what to watch."}, "fail": {"label": "Red", "text": "Don't build on this yet."}, "not_in_export": {"label": "Not in export", "text": "The export doesn't contain this. Not a judgement on your system."}, "needs_human": {"label": "Needs a human", "text": "Can't be judged automatically. The report says what to look at."}}}, "placeholders": ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"], "junk_text": ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"], "team_words": ["tier", "l1", "l2", "l3", "team", "escalated", "escalation", "queue", "transfer", "transferred", "backlog"], "fields": {"case_id": {"label": "Case ID", "shape": "id", "required": true, "synonyms": ["case id", "ticket id", "id", "case number", "ticket number", "casenumber", "conversation id", "hs object id", "issue key", "ticket key"]}, "created_at": {"label": "Created", "shape": "date", "required": true, "synonyms": ["created", "created at", "created date", "opened", "date opened", "createddate"]}, "closed_at": {"label": "Closed", "shape": "date", "required": true, "synonyms": ["closed", "closed at", "closed date", "solved at", "resolved at", "date closed", "closeddate", "resolution date", "resolutiondate"]}, "status": {"label": "Status", "shape": "category", "required": true, "synonyms": ["status", "state", "hs pipeline stage"]}, "owner": {"label": "Owner", "shape": "category", "synonyms": ["owner", "assignee", "agent", "case owner", "assigned to", "ownerid", "assignee id", "responder id", "admin assignee id"]}, "group": {"label": "Group or queue", "shape": "category", "synonyms": ["group", "queue", "team", "department", "group id", "team assignee id"]}, "reason": {"label": "Contact reason", "shape": "category", "synonyms": ["reason", "category", "case reason", "contact reason", "disposition", "type", "topic", "hs ticket category"]}, "subject": {"label": "Subject", "shape": "text", "synonyms": ["subject", "title", "summary"]}, "description": {"label": "Description", "shape": "text", "synonyms": ["description", "body", "first message", "details", "description text", "content"]}, "account_id": {"label": "Account", "shape": "id", "file": "both", "synonyms": ["account", "account id", "organization", "organisation", "company", "customer id", "accountid", "organization id", "company id"]}, "account_size": {"label": "Account size", "shape": "category", "file": "both", "synonyms": ["account size", "size", "tier", "plan", "seats band", "segment size"]}, "segment": {"label": "Product or segment", "shape": "category", "file": "both", "synonyms": ["product", "segment", "product line", "region"]}, "channel": {"label": "Channel", "shape": "category", "synonyms": ["channel", "origin", "via", "source"]}, "priority": {"label": "Priority", "shape": "category", "synonyms": ["priority", "severity", "hs ticket priority"]}, "reopen_count": {"label": "Reopens", "shape": "number", "synonyms": ["reopens", "reopen count", "times reopened"]}, "follow_up_of": {"label": "Follow-up of", "shape": "id", "synonyms": ["follow up of", "follow-up of", "parent case", "related case"]}, "escalated": {"label": "Escalated flag", "shape": "flag", "synonyms": ["escalated", "is escalated", "isescalated", "fr escalated"]}, "owner_changes": {"label": "Owners count", "shape": "number", "synonyms": ["owner changes", "assignee stations", "assignees", "owner count"]}, "group_changes": {"label": "Groups count", "shape": "number", "synonyms": ["group changes", "group stations", "groups", "queue changes"]}, "wait_time": {"label": "Customer wait time", "shape": "number", "synonyms": ["requester wait minutes", "requester wait time", "on hold time", "pending time", "wait time", "wait minutes"]}, "resolution_note": {"label": "Resolution note", "shape": "text", "synonyms": ["resolution", "resolution note", "solution", "resolution notes", "close notes"]}, "linked_article": {"label": "Linked article", "shape": "id", "synonyms": ["article", "linked article", "kb article", "macro", "knowledge article"]}, "last_update_at": {"label": "Last update", "shape": "date", "synonyms": ["last update", "last updated", "last public update", "updated at", "last modified", "updated"]}, "csat_score": {"label": "CSAT score", "shape": "number", "synonyms": ["csat", "satisfaction", "csat score", "satisfaction rating", "rating", "conversation rating"]}, "churned": {"label": "Churned", "shape": "flag", "synonyms": ["churned", "churn", "cancelled", "lost"]}, "exit_event": {"label": "Exit event", "shape": "category", "synonyms": ["exit event", "cancellation", "deregistration"]}, "comment_id": {"label": "Comment ID", "shape": "id", "level": "comment", "synonyms": ["comment id", "note id", "conversation part id", "comment number", "reply id"]}, "comment_body": {"label": "Comment body", "shape": "text", "level": "comment", "synonyms": ["comment body", "comment body text", "comment text", "comment plain body", "comment html body", "note body", "note body text", "hs note body", "public comment body", "reply body"]}, "comment_at": {"label": "Comment time", "shape": "date", "level": "comment", "synonyms": ["comment at", "comment created at", "comment created", "comment time", "comment date", "note created at", "note at", "hs timestamp", "reply created at", "conversation part created at"]}, "comment_author": {"label": "Comment author", "shape": "category", "level": "comment", "synonyms": ["comment author", "comment author id", "comment user id", "note author", "note user id", "hubspot owner id", "comment created by", "reply author"]}, "comment_author_type": {"label": "Comment author type", "shape": "category", "level": "comment", "synonyms": ["comment author type", "author type", "comment author kind", "note author type", "commenter type"]}, "comment_public": {"label": "Comment is public", "shape": "flag", "level": "comment", "synonyms": ["comment public", "comment is public", "is public comment", "public comment", "comment visible to customer", "jsd public"]}, "comment_private": {"label": "Comment is internal", "shape": "flag", "level": "comment", "synonyms": ["comment private", "comment is private", "comment internal", "comment is internal", "internal note", "private note", "note private", "is internal comment"]}, "bot_conversation_id": {"label": "Bot conversation ID", "shape": "id", "file": "bot", "synonyms": ["bot conversation id", "conversation id", "bot chat id", "chat id", "session id"]}, "bot_started_at": {"label": "Bot conversation started", "shape": "date", "file": "bot", "synonyms": ["started at", "bot started at", "conversation started at"]}, "bot_ended_at": {"label": "Bot conversation ended", "shape": "date", "file": "bot", "synonyms": ["ended at", "bot ended at", "conversation ended at"]}, "bot_intent": {"label": "Bot intent", "shape": "category", "file": "bot", "synonyms": ["intent", "bot intent", "detected intent", "detected theme"]}, "bot_claimed_resolved": {"label": "Bot claimed resolved", "shape": "flag", "file": "bot", "synonyms": ["claimed resolved", "bot claimed resolved", "claimed resolution"]}, "bot_customer_message": {"label": "Customer message", "shape": "text", "file": "bot", "synonyms": ["customer message", "first message", "customer wording", "utterance"]}, "bot_reopens": {"label": "Bot conversation reopens", "shape": "number", "file": "bot", "synonyms": ["reopens", "reopen count", "times reopened"]}, "bot_linked_cases": {"label": "Linked cases", "shape": "id", "file": "bot", "synonyms": ["linked case ids", "linked cases", "linked case id", "bot linked cases"]}}, "checks": [{"id": "C1", "band": "C", "dimension": "completeness", "title": "Core columns are present", "failure_title": "Core columns are missing", "metric": "Share of the four core fields (case ID, created, closed, status) found in the export", "threshold": {"dir": "higher", "pass": 1.0, "warn": 0.75}, "why": "Case ID, opened, closed and status underpin every other check and signal.", "fix": "Add the missing columns to the export. All major helpdesks have them as standard fields.", "refs": ["dama-nl"]}, {"id": "C2", "band": "C", "dimension": "completeness", "title": "Case history is available", "failure_title": "Only a final-state snapshot", "metric": "History file present (green), count columns only (amber), neither (not in export)", "why": "Without history you can't see transfers, reopens or how long cases sat with each team. Standard CSV exports usually leave it out.", "fix": "In Zendesk, add ticket metrics fields or pull ticket audits through the API. In Salesforce, turn on field history for Owner and Status and export Case History.", "refs": ["zendesk-exports", "freshdesk-export", "zendesk-ticket-metrics"]}, {"id": "C3", "band": "C", "dimension": "timeliness", "title": "History covers the period analysed", "failure_title": "History is shorter than the period analysed", "metric": "Share of cases created after history tracking began", "threshold": {"dir": "higher", "pass": 0.95, "warn": 0.6, "provisional": true}, "why": "Salesforce keeps field history for up to 18 months, and only from when tracking was switched on. Older cases look as if they never moved.", "fix": "Limit analysis to the period history covers, or extend retention.", "refs": ["salesforce-field-history"]}, {"id": "C4", "band": "C", "dimension": "uniqueness", "title": "Each case appears once", "failure_title": "Duplicate rows found", "metric": "Share of rows that repeat an earlier row identically in every column", "threshold": {"dir": "lower", "pass": 0.0, "warn": 0.01, "provisional": true}, "why": "A redundant copy inflates volume and distorts every rate. A repeated case ID on its own does not: an export with one row per comment or email repeats the case fields on every row by design, which is a shape, not a fault. Only rows identical in every column are counted here; the shape is reported separately, with the comment rows read rather than discarded.", "fix": "Deduplicate on the whole row. If the case ID repeats but the rows differ, nothing needs fixing here: the export is one row per comment, and it is read as such rather than discarded.", "note": "Measured on redundant copies only, so one case ID across twenty comment rows counts as nothing to fix, while the same row sent twice counts once.", "refs": ["dama-nl"]}, {"id": "B1", "band": "B", "dimension": "completeness", "title": "Routing fields are genuinely filled", "failure_title": "Routing fields are mostly empty or placeholders", "metric": "Lowest real fill rate across owner, group and reason (placeholders like \"N/A\" and \"Other\" count as empty)", "threshold": {"dir": "higher", "pass": 0.9, "warn": 0.6, "provisional": true}, "why": "A field that is mostly \"N/A\" or \"Other\" is empty in practice, however full it looks.", "fix": "Make the field required at closure and remove placeholder defaults.", "refs": ["dama-nl"]}, {"id": "B2", "band": "B", "dimension": "validity", "title": "Reasons aren't dominated by a catch-all", "failure_title": "A catch-all reason swallows too many cases", "metric": "Share of cases whose reason is blank or a catch-all such as \"Other\" or \"General\"", "threshold": {"dir": "lower", "pass": 0.1, "warn": 0.2, "provisional": true}, "why": "Whatever sits in \"Other\" is invisible to reporting and to any AI trained on your reasons.", "fix": "Sample the catch-all, split its biggest themes into new reasons, and remove \"Other\" as a default.", "refs": ["spotsaas-disposition", "mosaic-categorisation"], "note": "Practitioner rules of thumb only. No research-grade threshold exists."}, {"id": "B3", "band": "B", "dimension": "consistency", "title": "Reason codes are a tidy set", "failure_title": "Reason codes have sprawled", "metric": "Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times", "why": "Duplicates like \"SSO\" and \"Single sign-on\" split one issue in two and make trends meaningless.", "fix": "Merge near-duplicates, retire rarely used values, and keep each level to a handful of options.", "refs": ["supportbench-taxonomy", "xebia-contact-reasons"]}, {"id": "B4", "band": "B", "dimension": "consistency", "title": "Dates make sense", "failure_title": "Impossible dates found", "metric": "Share of cases closed before they were created, or with a status that contradicts the close date", "threshold": {"dir": "lower", "pass": 0.005, "warn": 0.02, "provisional": true}, "why": "One bad date can wreck an average resolution time.", "fix": "Find the automation or import writing bad dates, and exclude affected cases until fixed.", "refs": ["dama-nl"]}, {"id": "B5", "band": "B", "dimension": "validity", "title": "Resolution time separates customer wait", "failure_title": "Can't separate customer wait from agent work", "metric": "A customer-wait or on-hold time field is present and filled", "why": "Zendesk's full resolution time includes pending time and runs to the last solve. Without a wait field, \"slow\" may just mean \"waiting on the customer\".", "fix": "Add requester-wait or on-hold time to the export.", "refs": ["zendesk-durations"]}, {"id": "B6", "band": "B", "dimension": "validity", "title": "Reopens can be counted", "failure_title": "Reopens are invisible", "metric": "Reopen count present (amber); plus follow-up cases linked to originals (green)", "why": "In Zendesk, a reply to a closed ticket creates a new follow-up ticket instead of a reopen, so reopen counts miss repeat contacts.", "fix": "Include the reopens metric and link follow-up tickets to their originals.", "refs": ["zendesk-follow-up"]}, {"id": "B7", "band": "B", "dimension": "validity", "title": "The escalation flag is actually used", "failure_title": "The escalation flag is rarely set", "metric": "Share of cases flagged, compared with the share that history shows moving to engineering or tier 3", "why": "A flag that's almost never set usually means nobody sets it, not that nothing happens.", "fix": "Set the flag automatically from the routing event, or stop reporting on it.", "refs": []}, {"id": "B8", "band": "B", "dimension": "completeness", "title": "Survey scores are linked to cases", "failure_title": "Few closed cases carry a survey score", "metric": "Share of closed cases with a CSAT score", "threshold": {"dir": "higher", "pass": 0.15, "warn": 0.05, "provisional": true}, "why": "Survey analysis needs enough linked responses, and the happiest customers answer most, so low coverage hides real gaps.", "fix": "Link survey responses to case IDs; compare who responds with who doesn't before modelling.", "refs": ["mazor-response-bias"]}, {"id": "B9", "band": "B", "dimension": "completeness", "title": "Cases link to accounts", "failure_title": "Many cases have no account", "metric": "Share of cases with a real account ID", "threshold": {"dir": "higher", "pass": 0.95, "warn": 0.8, "provisional": true}, "why": "Churn analysis happens at account level. Unlinked cases drop out silently.", "fix": "Require an account on every case, or match on contact email domain.", "refs": ["dama-nl"]}, {"id": "B10", "band": "B", "dimension": "completeness", "title": "You can control for account size or product", "failure_title": "Nothing to control for", "metric": "Account size or product/segment present and filled on 90% of cases", "threshold": {"dir": "higher", "pass": 0.9, "warn": 0.6, "provisional": true}, "why": "Bigger, busier accounts raise more cases and behave differently. Without a size or segment field, every apparent driver is confounded.", "fix": "Join account size band and product to the export.", "refs": ["catalog-confounding"]}, {"id": "AI1", "band": "B", "dimension": "completeness", "title": "Customers' words are captured", "failure_title": "Little usable customer text", "metric": "Share of cases whose subject or description has five or more words and isn't a stock phrase", "threshold": {"dir": "higher", "pass": 0.8, "warn": 0.5, "provisional": true}, "why": "Without the customer's own words you can't discover what they want, the first job of any AI self-help project.", "fix": "Include the first customer message. Zendesk CSV exports leave out descriptions, so use JSON or the API.", "refs": ["zendesk-exports"]}, {"id": "AI2", "band": "B", "dimension": "validity", "title": "Reasons describe customer needs", "failure_title": "Reasons describe teams, not customers", "metric": "Share of volume whose reason names a team, tier or process (\"Tier 2\", \"Escalated\")", "threshold": {"dir": "lower", "pass": 0.1, "warn": 0.3, "provisional": true}, "why": "A reason like \"Tier 2\" tells a bot nothing about what the customer wanted. AI intents must describe the customer's need.", "fix": "Keep routing in routing fields and rewrite reasons as customer needs.", "refs": ["zendesk-custom-intents"]}, {"id": "AI3", "band": "B", "dimension": "consistency", "title": "Reasons don't overlap", "failure_title": "Reasons overlap", "metric": "Reviewed by a person in this version; the report lists near-duplicate reasons to start from", "why": "Zendesk warns that overlapping intents cause \"low-confidence or wrong topic detection\".", "fix": "Merge or redefine overlapping reasons so each covers one need.", "refs": ["zendesk-custom-intents", "xebia-contact-reasons"]}, {"id": "AI4", "band": "B", "dimension": "completeness", "title": "Solutions are recorded", "failure_title": "Few cases record how they were solved", "metric": "Share of closed cases with a resolution note or linked article", "threshold": {"dir": "higher", "pass": 0.7, "warn": 0.3, "provisional": true}, "why": "AI agents answer from written knowledge. If solutions live only in agents' heads, there's nothing to ground an answer in.", "fix": "Require a resolution note or linked article at closure, and mine macros for missing articles.", "refs": ["intercom-knowledge-sources", "intercom-content", "agentforce-knowledge"]}, {"id": "AI5", "band": "A", "dimension": "fit for use", "title": "Demand is concentrated enough to automate", "failure_title": "Demand is too scattered to automate easily", "metric": "Share of cases with a real reason that fall in the ten most common reasons", "threshold": {"dir": "higher", "pass": 0.5, "warn": 0.3, "provisional": true}, "why": "Automation pays back fastest on frequent, repeated questions.", "fix": "Start with the top themes and leave the long tail to people.", "refs": []}, {"id": "AI6", "band": "A", "dimension": "fit for use", "title": "Volume meets published vendor minimums", "failure_title": "Volume is below some vendors' published minimums", "metric": "Total cases against Forethought's published 20,000+ historical tickets and 2,000+ email or chat tickets a month", "why": "Some vendors need a minimum history to train. Most don't publish one, so ask.", "fix": "Ask each vendor for its minimum before a pilot.", "refs": ["forethought-faq"]}, {"id": "B11", "band": "B", "dimension": "completeness", "title": "Bot conversations can be linked to later cases", "failure_title": "Bot conversations aren't linked to later cases", "warn_title": "Bot conversations can only be matched by account and timing", "metric": "Follow-up case IDs on each conversation (green); account plus conversation start and end times, so returns have to be matched (amber); neither in the export (not in export)", "why": "The audit asks what happened after the bot claimed a resolution. Without a way to reach from a conversation to the cases that followed it, a claimed resolution can't be confirmed or contradicted, and silence can't be told apart from success.", "fix": "Export the follow-up case IDs on each conversation. Failing that, export the account ID with the conversation's start and end times, which lets returns be matched by account and timing.", "refs": ["zendesk-follow-up", "dama-nl"], "outcomes": {"pass": "Each conversation carries the cases that followed it, so claimed resolutions can be checked directly.", "warn": "Conversations carry an account and start and end times, but no case links. Matching returns by timing alone isn't supported yet, so this export can't be audited. Every claimed resolution is reported as can't tell; export the follow-up case IDs and the audit runs.", "not_in_export": "This export doesn't contain the link between bot conversations and the cases that followed them. The link may well exist in your bot or your helpdesk; it isn't in these files."}, "note": "The engine reports these words verbatim, and uses warn_title on the amber path, because the account and the timings are present and \"aren't linked\" would misdescribe the export. Only the green path is implemented. Amber is a limit of this tool, not a flaw in the data, so the use reports \"needs a human\" rather than amber \"usable with care\"."}], "uses": [{"id": "resolution", "title": "Resolution time analysis", "required": ["C1", "C4", "B4"], "optional": ["B5", "B6"]}, {"id": "transfers", "title": "Transfers and ownership", "required": ["C1", "C2"], "optional": ["C3", "B7"]}, {"id": "csat", "title": "CSAT and survey analysis", "required": ["C1", "B8"], "optional": ["B2"]}, {"id": "churn", "title": "Linking cases to churn", "required": ["C1", "B9", "B10"], "optional": ["C2"]}, {"id": "ai", "title": "AI self-help readiness", "required": ["AI1", "AI2", "AI4"], "optional": ["AI3", "AI5", "AI6", "B2", "B3"]}, {"id": "resolution_audit", "title": "Bot resolution audit", "required": ["B11"], "optional": [], "needs_file": "bot"}], "signals": [{"id": "slow_passed", "title": "Slow and passed-around cases", "unlocked_by_uses": ["transfers", "resolution"], "params": {"slow_days": 30, "min_owners": 3, "provisional": true}, "shows": "Cases open more than 30 days with three or more owners, by group", "disclaimer": "The one service signal worth watching. Not proof that it causes churn."}, {"id": "handoff", "title": "Handed off versus held", "unlocked_by_uses": ["transfers"], "shows": "Resolution time and CSAT for cases kept by one owner versus handed on", "disclaimer": "Harder cases get handed on, so this isn't a fair comparison of teams."}, {"id": "theme_movers", "title": "Theme movers", "unlocked_by_any_check": ["AI1", "B2"], "shows": "Reasons rising or falling in the last quarter against the previous nine months", "disclaimer": "Shows what is moving, not why."}, {"id": "open_risk", "title": "Open work at risk", "unlocked_by_uses": ["resolution"], "requires_fields": ["last_update_at"], "shows": "Open cases older than 70% of closed cases took to resolve", "disclaimer": "Not a prediction of which customers will leave."}, {"id": "exit_events", "title": "Exit events", "requires_fields": ["exit_event"], "shows": "Cancellations and similar events logged in cases, for whoever owns retention", "disclaimer": "A commercial warning recorded in support, not something support caused."}, {"id": "self_help", "title": "AI self-help candidates", "unlocked_by_uses": ["ai"], "shows": "Reasons that are frequent, quick, single-owner and documented", "disclaimer": "A shortlist to test, not a deflection forecast."}, {"id": "keep_human", "title": "Keep-a-human themes", "unlocked_by_uses": ["ai", "transfers"], "shows": "Reasons with long resolution times or many owners", "disclaimer": "Where automation is most likely to frustrate customers."}], "resolution_audit": {"params": {"provisional": true, "return_windows_days": [7, 14, 30], "escalation_within_minutes": 60, "normalise_reasons": true}, "disclaimer": "\"Not contradicted\" means silence, not success. It records only that no follow-up case appeared in the window: the customer may have given up, gone elsewhere, or left. Never report it as a resolution rate."}, "column_name_sources": {"zendesk": "zendesk-ticket-object", "freshdesk": "freshdesk-api", "intercom": "intercom-conversation", "hubspot": "hubspot-tickets", "jira_service_management": "jira-issue-fields"}, "comment_column_sources": {"zendesk": "zendesk-ticket-comments", "freshdesk": "freshdesk-api", "intercom": "intercom-conversation-part", "intercom_author": "intercom-conversation-part-author", "jira_service_management": "jsm-request-comments", "hubspot": "hubspot-notes"}, "vendor_questions": ["How do you define a resolution, and how do you count reopens?", "Do you report containment separately from resolution?", "What minimum ticket history and monthly volume do you need?", "Do you learn from our past tickets, our knowledge articles, or both?", "What happens when our reasons or tags overlap?", "Who grades the resolutions, you or us?"], "refs": {"dama-nl": {"title": "DAMA NL, Dimensions of Data Quality", "url": "https://dama-nl.org/wp-content/uploads/2020/09/DDQ-Dimensions-of-Data-Quality-Research-Paper-version-1.2-d.d.-3-Sept-2020.pdf"}, "zendesk-exports": {"title": "Zendesk, exporting ticket data", "url": "https://support.zendesk.com/hc/en-us/articles/4408886165402"}, "zendesk-ticket-metrics": {"title": "Zendesk, ticket metrics API", "url": "https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_metrics/"}, "zendesk-durations": {"title": "Zendesk, time duration metrics", "url": "https://support.zendesk.com/hc/en-us/articles/4408834848154-About-native-Support-time-duration-metrics"}, "zendesk-follow-up": {"title": "Zendesk, follow-up tickets", "url": "https://support.zendesk.com/hc/en-us/articles/8421655952026-Understanding-follow-up-tickets"}, "zendesk-custom-intents": {"title": "Zendesk, custom intents", "url": "https://support.zendesk.com/hc/en-us/articles/8718789695002-Personalizing-intelligent-triage-by-creating-custom-intents"}, "freshdesk-export": {"title": "Freshdesk, ticket export", "url": "https://support.freshdesk.com/support/solutions/articles/225158"}, "salesforce-field-history": {"title": "Salesforce, field history tracking", "url": "https://developer.salesforce.com/docs/atlas.en-us.securityImplGuide.meta/securityImplGuide/tracking_field_history.htm"}, "spotsaas-disposition": {"title": "Spotsaas, disposition taxonomy", "url": "https://www.spotsaas.com/resources/call-center-software/disposition-taxonomy"}, "mosaic-categorisation": {"title": "Mosaic, ticket categorisation", "url": "https://getmosaic.ai/blog/support-ticket-categorization-best-practices"}, "supportbench-taxonomy": {"title": "Supportbench, support taxonomy", "url": "https://www.supportbench.com/building-support-taxonomy-tag-tickets-product-insights/"}, "xebia-contact-reasons": {"title": "Xebia, categorising contact reasons", "url": "https://xebia.com/blog/four-practical-tips-on-how-to-categorize-contact-reasons/"}, "intercom-knowledge-sources": {"title": "Intercom, knowledge sources for AI agents", "url": "https://www.intercom.com/help/en/articles/9440354-knowledge-sources-to-power-ai-agents-and-self-serve-support"}, "intercom-content": {"title": "Intercom, optimising content for Fin", "url": "https://www.intercom.com/help/en/articles/7860255-optimizing-content-for-fin"}, "agentforce-knowledge": {"title": "Salesforce, Agentforce and Knowledge", "url": "https://help.salesforce.com/s/articleView?id=004333412&language=en_US&type=1"}, "forethought-faq": {"title": "Forethought FAQ", "url": "https://forethought.ai/faq"}, "zendesk-ticket-object": {"title": "Zendesk, Ticket object reference", "url": "https://developer.zendesk.com/api-reference/ticketing/tickets/tickets/"}, "freshdesk-api": {"title": "Freshdesk, API reference (Tickets)", "url": "https://developers.freshdesk.com/api/"}, "intercom-conversation": {"title": "Intercom, Conversation object reference", "url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/conversations/conversation"}, "hubspot-tickets": {"title": "HubSpot, Tickets API guide", "url": "https://developers.hubspot.com/docs/api-reference/legacy/crm/objects/tickets/guide"}, "jira-issue-fields": {"title": "Atlassian, Jira expressions type reference (Issue)", "url": "https://developer.atlassian.com/cloud/jira/platform/jira-expressions-type-reference/"}, "zendesk-ticket-comments": {"title": "Zendesk, Ticket Comments API", "url": "https://developer.zendesk.com/api-reference/ticketing/tickets/ticket_comments/"}, "intercom-conversation-part": {"title": "Intercom, Conversation Part model", "url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/conversation_part"}, "intercom-conversation-part-author": {"title": "Intercom, Conversation Part Author model", "url": "https://developers.intercom.com/docs/references/rest-api/api.intercom.io/models/conversation_part_author"}, "jsm-request-comments": {"title": "Atlassian, Jira Service Management request comments (CommentDTO)", "url": "https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/"}, "hubspot-notes": {"title": "HubSpot, Notes engagement properties", "url": "https://developers.hubspot.com/docs/guides/api/crm/engagements/notes"}, "mazor-response-bias": {"title": "Mazor et al., survey response bias", "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC1464019/"}, "catalog-confounding": {"title": "Catalog of Bias, confounding", "url": "https://catalogofbias.org/biases/confounding/"}}};
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-const ENGINE_VERSION = "0.3.0";
+const ENGINE_VERSION = "0.4.0";
 
 // ---------- CSV ----------
 function parseCSV(text) {
@@ -17682,30 +17692,215 @@ function describeThreshold(t, asPct = true) {
     : t.pass === 0 ? `Green at none, amber up to ${f(t.warn)}` : `Green at ${f(t.pass)} or less, amber up to ${f(t.warn)}`;
 }
 
-// ---------- build canonical cases ----------
-function canonical(records, map, rules) {
+// ---------- the file's shape, and collapsing it to one row per case ----------
+// A real export is often one row per case comment or email, with the case fields
+// repeated on every row. That is a shape, not a fault, so it is named rather than
+// failed, and the comment rows are read rather than thrown away.
+//
+// A repeated case ID has two possible causes and they are told apart by what varies:
+//   rows identical in every column            -> a redundant copy. A true duplicate.
+//   rows whose case-level columns agree        -> one row per comment. The file's shape.
+//   rows whose case-level columns disagree     -> a conflict, named and counted.
+// Collapsing happens before any check runs, so nothing downstream sees a raw row.
+
+const isCommentField = (f) => (f.level || "case") === "comment";
+
+// A field whose value belongs to the case, so it must agree across the case's rows.
+// Only mapped fields are judged: an unmapped column that varies is what a comment
+// export looks like, and guessing at its meaning would invent conflicts.
+const caseLevelKeys = (rules, map) => Object.keys(rules.fields)
+  .filter((k) => map[k] && !isCommentField(rules.fields[k]) && (rules.fields[k].file || "case") !== "bot");
+
+// Repeated case fields are sometimes blanked on all but the first row of a case.
+// Blanks are therefore not disagreement: the first real value wins, and only two
+// different real values are a conflict worth a warning.
+function agree(rows, read) {
+  const vals = [];
+  for (const r of rows) { const v = read(r); if (v !== undefined && v !== "") vals.push(v); }
+  if (!vals.length) return { value: "", conflict: false };
+  const distinct = new Set(vals);
+  return { value: vals[0], conflict: distinct.size > 1, distinct: [...distinct] };
+}
+
+function collapseRows({ records, headers = null, map, rules }) {
   const ph = new Set(rules.placeholders.map((p) => p.toLowerCase()));
   const get = (r, k) => (map[k] ? String(r[map[k]] ?? "").trim() : undefined);
   const real = (v) => v !== undefined && !ph.has(String(v).trim().toLowerCase());
-  const cases = records.map((r) => {
-    const c = {};
-    for (const k of Object.keys(rules.fields)) c[k] = get(r, k);
-    c._created = parseDate(c.created_at);
-    c._closed = parseDate(c.closed_at);
-    c._isClosed = c.status !== undefined ? isClosedStatus(c.status) : c._closed != null;
-    c._days = c._created != null && c._closed != null ? (c._closed - c._created) / DAY : null;
-    c._owners = c.owner_changes !== undefined && c.owner_changes !== "" ? Number(c.owner_changes) : null;
-    return c;
+  const cols = headers && headers.length ? headers
+    : [...new Set(records.flatMap((r) => Object.keys(r)))];
+  const rowKey = (r) => JSON.stringify(cols.map((h) => String(r[h] ?? "")));
+
+  const commentKeys = Object.keys(rules.fields).filter((k) => isCommentField(rules.fields[k]));
+  const caseKeys = caseLevelKeys(rules, map);
+  const hasId = !!map.case_id;
+
+  // Group by case ID, first appearance first. A row with no case ID can't be
+  // grouped with anything, so it stays its own case and is counted separately
+  // rather than silently piled in with every other blank.
+  const groups = new Map();
+  let noIdRows = 0;
+  records.forEach((r, i) => {
+    const id = hasId ? get(r, "case_id") : "";
+    const key = hasId && id !== "" ? `id:${id}` : (noIdRows++, `row:${i}`);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
   });
-  return { cases, real, ph };
+
+  let duplicateRows = 0, commentRows = 0, multiRowCases = 0;
+  const conflictCount = new Map();
+  const cases = [];
+
+  for (const rows of groups.values()) {
+    // Drop redundant copies first, so an identical row repeated inside a comment
+    // export is a duplicate and not an extra comment.
+    const seenRow = new Set();
+    const kept = [];
+    for (const r of rows) {
+      const k = rowKey(r);
+      if (seenRow.has(k)) { duplicateRows++; continue; }
+      seenRow.add(k); kept.push(r);
+    }
+    if (kept.length > 1) { multiRowCases++; commentRows += kept.length; }
+
+    const c = {};
+    for (const k of Object.keys(rules.fields)) {
+      if (isCommentField(rules.fields[k])) { c[k] = get(kept[0], k); continue; }
+      if (!map[k]) { c[k] = undefined; continue; }
+      const a = agree(kept, (r) => get(r, k));
+      c[k] = a.value;
+      if (a.conflict && kept.length > 1) conflictCount.set(k, (conflictCount.get(k) || 0) + 1);
+    }
+
+    // Every row of the case is a comment when the export carries comment columns.
+    c._comments = commentKeys.length ? kept.map((r) => {
+      const at = get(r, "comment_at");
+      return {
+        id: get(r, "comment_id") || "",
+        at: at || "", _at: parseDate(at),
+        body: get(r, "comment_body") || "",
+        author: get(r, "comment_author") || "",
+        author_type: get(r, "comment_author_type") || "",
+        // One answer from two spellings of opposite polarity. Unknown stays null:
+        // an export with neither column says nothing about who could see what.
+        public: map.comment_public ? truthy(get(r, "comment_public"))
+          : map.comment_private ? !truthy(get(r, "comment_private")) : null,
+      };
+    }).filter((cm) => cm.at || cm.body) : [];
+    // Oldest first, by time where there is one and by file order where there isn't.
+    if (c._comments.some((cm) => cm._at != null)) {
+      c._comments.sort((a, b) => (a._at ?? Infinity) - (b._at ?? Infinity));
+    }
+    c._rows = kept.length;
+    cases.push(c);
+  }
+
+  const shape = multiRowCases > 0 ? "one_row_per_comment" : "one_row_per_case";
+  const conflicts = [...conflictCount].map(([field, n]) => ({
+    field, label: rules.fields[field].label, cases: n,
+  })).sort((a, b) => b.cases - a.cases || a.field.localeCompare(b.field));
+
+  return { cases, real, ph, shape, rows: records.length, duplicate_rows: duplicateRows,
+    comment_rows: commentRows, multi_row_cases: multiRowCases, no_id_rows: noIdRows,
+    conflicts, case_level_fields: caseKeys, comment_fields: commentKeys.filter((k) => map[k]) };
+}
+
+// Per-case values the checks and signals read. Derived after collapsing, so a case
+// built from twenty comment rows is indistinguishable here from one built from one.
+function deriveCase(c, { map, real }) {
+  c._created = parseDate(c.created_at);
+  c._closed = parseDate(c.closed_at);
+  c._isClosed = c.status !== undefined ? isClosedStatus(c.status) : c._closed != null;
+  c._days = c._created != null && c._closed != null ? (c._closed - c._created) / DAY : null;
+  c._owners = c.owner_changes !== undefined && c.owner_changes !== "" ? Number(c.owner_changes) : null;
+
+  // Comment text is customer and agent wording the case fields don't carry. One
+  // accessor, so the text checks and the theme signals can't drift apart.
+  c._commentText = c._comments.map((cm) => cm.body).filter(Boolean).join(" \n");
+  c._text = [c.subject, c.description, c._commentText].filter((s) => real(s) && s).join(" \n");
+
+  // The last update is the latest public comment. Derived only when no column was
+  // mapped, and only from comments we can date; which pool it came from is reported,
+  // because "latest comment of any kind" includes internal notes the customer never saw.
+  c._lastUpdateFrom = null;
+  if (!map.last_update_at && c._comments.length) {
+    const dated = c._comments.filter((cm) => cm._at != null);
+    const pub = dated.filter((cm) => cm.public === true);
+    const pool = pub.length ? pub : dated;
+    if (pool.length) {
+      const latest = pool.reduce((a, b) => (b._at > a._at ? b : a));
+      c.last_update_at = latest.at;
+      c._lastUpdateFrom = pub.length ? "latest_public_comment" : "latest_comment";
+    }
+  }
+  c._lastUpdate = parseDate(c.last_update_at);
+  return c;
+}
+
+// ---------- what was read ----------
+// Said plainly and before any verdict: how many rows arrived, how many cases they
+// collapsed to, how many comments came with them, and anything dropped or derived.
+//
+// One function, used by the audit and by the page's before-you-run summary, because
+// two of these drifting apart is how a page ends up reporting "NaN cases".
+function summariseLoad(L, U, rules) {
+  const perCase = U.map((c) => c._comments.length).filter((k) => k > 0);
+  const derived = [];
+  const lastFrom = U.filter((c) => c._lastUpdateFrom);
+  if (lastFrom.length) {
+    const fromPublic = lastFrom.filter((c) => c._lastUpdateFrom === "latest_public_comment").length;
+    derived.push({ field: "last_update_at", label: rules.fields.last_update_at.label, cases: lastFrom.length,
+      from: fromPublic === lastFrom.length ? "latest_public_comment"
+        : fromPublic ? "latest_public_comment_where_known" : "latest_comment",
+      detail: fromPublic === lastFrom.length
+        ? `Not in the export, so taken from the latest public comment on each of ${lastFrom.length.toLocaleString()} cases.`
+        : fromPublic
+          ? `Not in the export. Taken from the latest public comment where the export says which comments were public (${fromPublic.toLocaleString()} cases) and from the latest comment of any kind otherwise (${(lastFrom.length - fromPublic).toLocaleString()}).`
+          : `Not in the export, and no column says which comments were public, so taken from the latest comment of any kind on each of ${lastFrom.length.toLocaleString()} cases. Internal notes count towards it.` });
+  }
+  const dropped = [];
+  if (L.duplicate_rows) dropped.push({ reason: "Repeated an earlier row identically in every column", rows: L.duplicate_rows });
+  return {
+    shape: L.shape,
+    rows: L.rows, cases: U.length,
+    duplicate_rows: L.duplicate_rows,
+    comment_rows: L.comment_rows,
+    multi_row_cases: L.multi_row_cases,
+    no_id_rows: L.no_id_rows,
+    comments: perCase.reduce((a, b) => a + b, 0),
+    cases_with_comments: perCase.length,
+    comments_per_case: perCase.length
+      ? { min: Math.min(...perCase), median: median(perCase), max: Math.max(...perCase) } : null,
+    comment_fields: L.comment_fields,
+    conflicts: L.conflicts,
+    dropped, derived,
+  };
+}
+
+// The same summary, without running a single check. The page shows this beside the
+// file picker so what was read is said before anything is judged.
+function readSummary({ records, headers = null, map, rules }) {
+  const L = collapseRows({ records, headers, map, rules });
+  const U = L.cases.map((c) => deriveCase(c, { map, real: L.real }));
+  return summariseLoad(L, U, rules);
 }
 
 // ---------- the audit ----------
-function runAudit({ records, mapping, history = null, bot = null, rules, source = "upload" }) {
+function runAudit({ records, mapping, headers = null, history = null, bot = null, rules, source = "upload" }) {
   const map = mapping;
-  const has = (k) => !!map[k];
-  const { cases, real } = canonical(records, map, rules);
-  const n = cases.length;
+  // Collapse first. Every check below sees one row per case, whatever shape arrived.
+  const L = collapseRows({ records, headers, map, rules });
+  const real = L.real;
+  const U = L.cases.map((c) => deriveCase(c, { map, real }));
+  const n = L.rows;        // rows read from the file
+  const u = U.length;      // distinct cases after collapsing
+
+  // A field the comment rows supplied is as present as one a column supplied, so
+  // `has` has to know about it: otherwise deriving the last update from comments
+  // would fill the value and still leave every signal that needs it locked.
+  const derivedFields = new Set();
+  if (!map.last_update_at && U.some((c) => c._lastUpdateFrom)) derivedFields.add("last_update_at");
+  const has = (k) => !!map[k] || derivedFields.has(k);
+
   const R = {};
   const checkDef = Object.fromEntries(rules.checks.map((c) => [c.id, c]));
   const set = (id, outcome, value, display, detail, extra = {}) => {
@@ -17718,7 +17913,10 @@ function runAudit({ records, mapping, history = null, bot = null, rules, source 
     R[id] = { id, band: d.band, title, rule_title: d.title,
       outcome, value, display, detail, threshold: describeThreshold(d.threshold), ...extra };
   };
-  const fill = (k) => (has(k) && n ? cases.filter((c) => real(c[k])).length / n : null);
+  // Fill rates are per case, never per row: in a comment export a row count would
+  // weight a case with forty comments forty times.
+  const fill = (k) => (has(k) && u ? U.filter((c) => real(c[k])).length / u : null);
+  const ufill = fill;
 
   // history: owners per case and earliest change
   let hist = null;
@@ -17732,7 +17930,7 @@ function runAudit({ records, mapping, history = null, bot = null, rules, source 
       byCase.get(h.case_id).push(h);
     }
     hist = { byCase, earliest };
-    for (const c of cases) {
+    for (const c of U) {
       const ev = byCase.get(c.case_id) || [];
       const ownerMoves = ev.filter((e) => /owner|assignee/i.test(e.field)).length;
       if (c._owners == null && ev.length) c._owners = 1 + ownerMoves;
@@ -17755,25 +17953,24 @@ function runAudit({ records, mapping, history = null, bot = null, rules, source 
   // C3
   if (!hist) set("C3", "not_in_export", null, "No history", "No change log to measure.");
   else {
-    const covered = cases.filter((c) => c._created != null && c._created >= hist.earliest).length / n;
+    const covered = U.filter((c) => c._created != null && c._created >= hist.earliest).length / u;
     const start = new Date(hist.earliest).toISOString().slice(0, 10);
     set("C3", evalThreshold(covered, checkDef.C3.threshold), covered, pct(covered),
       `History starts ${start}. ${pct(1 - covered)} of cases were created before then and look as if they never moved.`);
   }
 
-  // C4
-  const ids = new Map();
-  for (const c of cases) ids.set(c.case_id, (ids.get(c.case_id) || 0) + 1);
-  const dupRows = [...ids.values()].filter((v) => v > 1).reduce((s, v) => s + v, 0);
+  // C4. A redundant copy is a row identical to an earlier one in every column. A
+  // repeated case ID whose rows differ is the file's shape, reported separately, so
+  // a one-row-per-comment export is not failed for being what it is.
+  const dupRows = L.duplicate_rows;
   const dupShare = n ? dupRows / n : 0;
+  const shapeNote = L.shape === "one_row_per_comment"
+    ? ` ${L.multi_row_cases.toLocaleString()} cases span more than one row: this export is one row per comment, not per case, and was collapsed before these checks ran.`
+    : "";
   set("C4", has("case_id") ? evalThreshold(dupShare, checkDef.C4.threshold) : "not_in_export", dupShare, pct(dupShare, 1),
-    dupRows ? `${dupRows} rows share a case ID with another row.` : "No repeated case IDs.");
-
-  // de-duplicated set for everything else
-  const seen = new Set();
-  const U = cases.filter((c) => (seen.has(c.case_id) ? false : (seen.add(c.case_id), true)));
-  const u = U.length;
-  const ufill = (k) => (has(k) && u ? U.filter((c) => real(c[k])).length / u : null);
+    (dupRows ? `${dupRows.toLocaleString()} rows repeat an earlier row identically in every column.`
+      : "No row repeats another identically.") + shapeNote,
+    { shape: L.shape, duplicate_rows: dupRows, rows: n, cases: u });
 
   // B1
   const routing = ["owner", "group", "reason"].filter(has);
@@ -17861,10 +18058,16 @@ function runAudit({ records, mapping, history = null, bot = null, rules, source 
   // AI1
   const junk = new Set(rules.junk_text);
   const usable = (s) => s && !junk.has(s.toLowerCase().trim()) && s.trim().split(/\s+/).length >= 5;
-  if (!has("subject") && !has("description")) set("AI1", "not_in_export", null, "No text", "No subject or description column.");
+  // Comment bodies are customer wording too, and in a comment export they are
+  // usually the only place the customer's own words survive.
+  const hasText = has("subject") || has("description") || has("comment_body");
+  if (!hasText) set("AI1", "not_in_export", null, "No text", "No subject, description or comment body column.");
   else {
-    const share = U.filter((c) => usable(c.subject) || usable(c.description)).length / u;
-    set("AI1", evalThreshold(share, checkDef.AI1.threshold), share, pct(share), `${pct(share)} of cases have usable customer wording.`);
+    const viaComment = U.filter((c) => !usable(c.subject) && !usable(c.description) && usable(c._commentText)).length;
+    const share = U.filter((c) => usable(c.subject) || usable(c.description) || usable(c._commentText)).length / u;
+    set("AI1", evalThreshold(share, checkDef.AI1.threshold), share, pct(share),
+      `${pct(share)} of cases have usable customer wording.` +
+      (viaComment ? ` ${viaComment.toLocaleString()} of them only in the comment text, not in the subject or description.` : ""));
   }
 
   // AI2
@@ -17963,10 +18166,13 @@ function runAudit({ records, mapping, history = null, bot = null, rules, source 
   // ---------- drivers ----------
   const drivers = computeDrivers({ U, has, real, rules });
 
+  const load = summariseLoad(L, U, rules);
+
   return {
     meta: { engine: ENGINE_VERSION, rules: rules.meta.version, rules_status: rules.meta.status, source,
-      rows: n, cases: u, history_rows: history ? history.length : 0, bot_rows: botRows.length,
+      rows: n, cases: u, shape: L.shape, history_rows: history ? history.length : 0, bot_rows: botRows.length,
       generated: new Date().toISOString() },
+    load,
     checks: R, uses, signals, fixFirst, drivers, resolution_audit,
     vendor_questions: rules.vendor_questions,
   };
@@ -18160,7 +18366,8 @@ function computeDrivers({ U, has, real }) {
     { id: "priority", label: "Any high or urgent priority case", fn: any((c) => /high|urgent/i.test(c.priority || "")), need: "priority" },
     { id: "phone", label: "Any phone contact", fn: any((c) => /phone|call/i.test(c.channel || "")), need: "channel" },
     { id: "other", label: "Any case logged as Other or blank", fn: any((c) => !real(c.reason)), need: "reason" },
-    { id: "billing", label: "Any billing or invoice case", fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject}`)) },
+    // Reads the comment text as well, through the same accessor the text checks use.
+    { id: "billing", label: "Any billing or invoice case", fn: any((c) => /bill|invoice/i.test(`${c.reason} ${c.subject} ${c._commentText}`)) },
     { id: "lowcsat", label: "Any CSAT of 1 or 2", fn: any((c) => Number(c.csat_score) >= 1 && Number(c.csat_score) <= 2), need: "csat_score" },
     { id: "reopen", label: "Any reopened case", fn: any((c) => Number(c.reopen_count) > 0), need: "reopen_count" },
     { id: "slow", label: "Any case open 30+ days", fn: any((c) => c._days != null && c._days > 30) },
@@ -18204,7 +18411,8 @@ function mantelHaenszel(tabs) {
   return { or, lo: Math.exp(Math.log(or) - 1.96 * se), hi: Math.exp(Math.log(or) + 1.96 * se) };
 }
 
-// Support Signal page. Depends on engine functions (parseCSV, autoMap, runAudit) and RULES being in scope.
+// Support Signal page. Depends on engine functions (parseCSV, autoMap, mapColumns,
+// readSummary, runAudit) and RULES being in scope.
 (function () {
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -18230,7 +18438,8 @@ function mantelHaenszel(tabs) {
   function runDemo(kind) {
     const headers = kind === "demo-snapshot" ? demoParsed.headers.filter((h) => !SNAPSHOT_DROP.includes(h)) : demoParsed.headers;
     const mapping = autoMap(headers, RULES);
-    return runAudit({ records: demoParsed.records, mapping, history: kind === "demo-history" ? demoHistory : null,
+    // headers is passed so row identity is judged on the columns actually in play.
+    return runAudit({ records: demoParsed.records, mapping, headers, history: kind === "demo-history" ? demoHistory : null,
       bot: demoBot(DEMO_BOT[kind]), rules: RULES, source: kind });
   }
 
@@ -18241,7 +18450,14 @@ function mantelHaenszel(tabs) {
     $("#upload-panel").hidden = state.source !== "upload";
     if (!r) return;
     const src = { "demo-snapshot": "Demo company, snapshot export", "demo-history": "Demo company, export with history", upload: "Your export" }[state.source];
-    $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
+    $("#run-meta").textContent = `${src}, ${r.meta.cases.toLocaleString()} cases${
+      r.meta.shape === "one_row_per_comment" ? ` from ${r.meta.rows.toLocaleString()} comment rows` : ""}${
+      r.meta.history_rows ? `, ${r.meta.history_rows.toLocaleString()} history records` : ""}`;
+    // Only worth a block when there is something to say beyond "one row per case".
+    const L = r.load;
+    const notable = L.shape === "one_row_per_comment" || L.duplicate_rows || L.no_id_rows
+      || L.conflicts.length || L.derived.length;
+    $("#load-note").innerHTML = notable ? loadBlock(L) : "";
     renderUses(r); renderFix(r); renderAudit(r); renderSignals(r); renderDrivers(r); renderChecks(r); renderVendor(r);
     $("#stamp").textContent = `Rules ${r.meta.rules} (${r.meta.rules_status}), engine ${r.meta.engine}, run ${new Date(r.meta.generated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
   }
@@ -18430,6 +18646,49 @@ function mantelHaenszel(tabs) {
     state.confidence = m.confidence;
     renderMapping();
     $("#upload-status").textContent = `${state.upload.records.length.toLocaleString()} rows, ${state.upload.headers.length} columns read. Check the mapping, then run.`;
+    renderRead();
+  }
+
+  // What was read, said before anything is judged: the file's shape, what it
+  // collapsed to, and anything dropped or disagreeing. Recomputed whenever the
+  // mapping changes, because the mapping is what decides which columns are
+  // case-level and so what counts as a disagreement.
+  function renderRead() {
+    const box = $("#load-read");
+    if (!state.upload) { box.innerHTML = ""; return; }
+    // The engine's own summary, so this says exactly what the report will say.
+    const L = readSummary({ records: state.upload.records, headers: state.upload.headers,
+      map: state.mapping, rules: RULES });
+    box.innerHTML = loadBlock(L, { beforeRun: true });
+  }
+
+  // One renderer for both places this is shown: beside the file picker before a
+  // run, and under the verdicts after one.
+  function loadBlock(L, { beforeRun = false } = {}) {
+    const n = (x) => Number(x || 0).toLocaleString();
+    const comment = L.shape === "one_row_per_comment";
+    const per = L.comments_per_case;
+    const bits = [];
+    bits.push(comment
+      ? `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>. The case fields repeat on every row, so this export is one row per comment or email, not one row per case. It was collapsed to one row per case before any check ran.</li>`
+      : `<li><strong>${n(L.rows)} rows</strong> for <strong>${n(L.cases)} cases</strong>: one row per case${
+          L.duplicate_rows ? ", once the repeated rows below are set aside" : ""}.</li>`);
+    if (L.comments) {
+      bits.push(`<li><strong>${n(L.comments)} comments</strong> read across ${n(L.cases_with_comments)} cases${
+        per ? `, ${per.median} per case typically (${per.min} to ${per.max})` : ""}.</li>`);
+    } else if (comment && !L.comment_fields.length) {
+      bits.push(`<li>No comment columns were recognised, so the extra rows were collapsed but their contents couldn't be read. Map a comment body and time below to use them.</li>`);
+    }
+    if (L.duplicate_rows) bits.push(`<li><strong>${n(L.duplicate_rows)} rows dropped</strong>: each repeated an earlier row identically in every column.</li>`);
+    if (L.no_id_rows) bits.push(`<li><strong>${n(L.no_id_rows)} rows have no case ID.</strong> Each is counted as its own case, because there is nothing to group it by.</li>`);
+    for (const d of L.derived || []) bits.push(`<li><strong>${esc(d.label)} derived.</strong> ${esc(d.detail)}</li>`);
+    const conflicts = (L.conflicts || []).map((c) =>
+      `<li><strong>${esc(c.label)}</strong> differs between rows of <strong>${n(c.cases)} cases</strong>. The first row's value was used. If this column holds a value per comment rather than per case, map it to a comment field below instead.</li>`).join("");
+    return `<div class="load${conflicts ? " load-warn" : ""}">
+      <h4>${conflicts ? "What was read, and what disagreed" : "What was read"}</h4>
+      <ul>${bits.join("")}${conflicts}</ul>
+      ${beforeRun && comment ? `<p class="s muted">Nothing is thrown away: the comment text is read by the wording checks, and the last update is taken from the latest public comment when no column carries it.</p>` : ""}
+    </div>`;
   }
   async function onHistory() {
     const text = await readFile($("#file-history"));
@@ -18462,12 +18721,17 @@ function mantelHaenszel(tabs) {
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
     const pii = state.upload.headers.filter((h) => /e-?mail|phone|mobile|name$|first name|last name|address/i.test(h));
-    // Required fields first: nothing else matters until those are right.
+    // Required fields first: nothing else matters until those are right. Comment
+    // fields last, because they only apply to a one-row-per-comment export and
+    // mixing them in among the case fields makes both harder to scan.
+    const tier = ([k, f]) => (f.required ? 0 : (f.level || "case") === "comment" ? 2 : 1);
     const fields = Object.entries(RULES.fields).filter(([, f]) => (f.file || "case") !== "bot")
-      .sort((a, b) => (b[1].required ? 1 : 0) - (a[1].required ? 1 : 0));
+      .sort((a, b) => tier(a) - tier(b));
     const rows = fields.map(([k, f]) => {
       const st = mapState(k);
-      return `<tr class="map-${st}"><td>${esc(f.label)}${f.required ? " <span class='req'>required</span>" : ""}</td>
+      const mark = f.required ? " <span class='req'>required</span>"
+        : (f.level || "case") === "comment" ? " <span class='lvl'>per comment</span>" : "";
+      return `<tr class="map-${st}"><td>${esc(f.label)}${mark}</td>
         <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
         <td class="map-note">${esc(MAP_NOTE[st])}</td></tr>`;
     }).join("");
@@ -18490,13 +18754,14 @@ function mantelHaenszel(tabs) {
         state.mapping[k] = s.value; state.confidence[k] = "name";
       } else { delete state.mapping[k]; delete state.confidence[k]; }
       renderMapping();   // the How column and the alerts have to keep up
+      renderRead();      // and so does what was read: the mapping decides what conflicts
     }));
     $("#run-upload").disabled = false;
   }
   function runUpload() {
     try {
-      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, history: state.uploadHistory,
-        bot: state.uploadBot, rules: RULES, source: "upload" });
+      state.report = runAudit({ records: state.upload.records, mapping: state.mapping, headers: state.upload.headers,
+        history: state.uploadHistory, bot: state.uploadBot, rules: RULES, source: "upload" });
       state.driversOn = false; render();
       $("#summary").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     } catch (e) { $("#upload-status").textContent = `Couldn't run the checks: ${e.message}. Check that the required columns are mapped.`; }

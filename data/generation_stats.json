@@ -44,5 +44,18 @@
         "cant_tell": 0
       }
     }
+  },
+  "comments": {
+    "rows": 15227,
+    "cases": 5083,
+    "exact_duplicate_rows": 67,
+    "comments_per_case": {
+      "min": 1,
+      "median": 3,
+      "max": 5
+    },
+    "cases_ending_on_internal_note": 1321,
+    "rows_with_duplicates": 15689,
+    "exact_duplicate_rows_with_duplicates": 529
   }
 }
