@@ -161,6 +161,37 @@ Two details change without changing a verdict:
 - C4's `detail` names the shape, the number of cases spanning more than one row, and whether the collapse was clean.
 - AI1's `detail` reports how many cases have usable wording *only* in the comment text. The share can only rise, never fall, so the outcome stays green.
 
+### A conflict reaches only as far as the field is read
+A dirty collapse is a fault in named columns, so it holds back only what reads them.
+
+- A **required** check of a use reads the conflicting field: the use's own numbers are built on a value picked from disagreeing rows, so the use can go red.
+- Only an **optional** check reads it: the context is unreliable but the headline isn't, so the use loses its green and nothing more. A conflict in `follow_up_of` reaches resolution time only through B6, which is optional there, so resolution goes amber rather than red.
+- Nothing reads it: C4 is set aside for that use, and the use says so in `conflicts_set_aside` rather than quietly ignoring it.
+
+Each check declares the case-level fields it reads, as `reads_fields` in `rules/rules.yaml`, and a use's field set is the union of what its checks read. `build_rules.py` rejects a name that isn't a field, so the scoping can't silently widen through a typo. C4's own outcome stays global: the export does have a problem and the check card still reports it.
+
+A repeated or blank case ID is **not** scoped this way. That is the cases themselves rather than one column, and every use reads the cases.
+
+Signals follow their uses. A signal that names a conflicting field in `requires_fields` is cautioned rather than locked: a caveat on a number is not a reason to withhold it.
+
+### Naming the fault
+C4 carries three titles, because a repeated case ID and a dirty collapse send someone looking for different things:
+
+| What drove it | Title |
+| --- | --- |
+| Repeated or blank case IDs, amber | Some cases appear more than once |
+| Repeated or blank case IDs, red | Cases appear more than once |
+| A case field disagreeing between comment rows | A column mapped as a case field changes between comments |
+
+No caution may assert another check's outcome. A caution is attached to a measurement and cannot know how a check came out, and saying so is how the "What was read" box once printed "which is why C4 passes" on a run where C4 was red. `build_rules.py` rejects a caution whose text claims a check outcome, and a test asserts nothing the box is built from claims one.
+
+### Mapping: a column that changes between comments is not a case field
+In a one-row-per-comment export, a column whose values differ between rows of the same case does not hold a value per case, whatever its name suggests. `mapColumns` refuses it for a case-level field, leaving the header free for a comment field to win by name; if none does, the column stays unmapped and the refusal is reported, with the column named, in the mapping table's "How" column.
+
+This is what a real export needed corrected by hand: a `parent_case` column holding a value per comment was auto-mapped to `follow_up_of`, so the collapse reported a conflict in a field that never belonged to the case. The case ID is exempt, being the key the rows are grouped by, and blanks are ignored, matching what the collapser already treats as agreement. Like value-shape inference, it needs the values, so `autoMap()` does not do it.
+
+None of the demo exports is affected: no case-level column in any of them varies within a case, and a test asserts the mapping is unchanged for all four.
+
 ### What this layer does not test
 Nothing here exercises a **case-level conflict** — the case fields are repeated faithfully on every row, so there is nothing to disagree. That case is covered by a hand-built fixture in `test/engine.test.mjs` which mixes all three causes of a repeated case ID in nine rows: a one-to-many case, a redundant copy, a case whose owner disagrees between rows, and a case whose repeated fields are blanked rather than repeated (which is not disagreement, and takes the first real value).
 

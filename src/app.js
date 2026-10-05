@@ -19,7 +19,7 @@
   const DEMO_BOT = { "demo-snapshot": "demo-bot-snapshot", "demo-history": "demo-bot-history" };
 
   const state = { source: "demo-snapshot", report: null, upload: null, uploadHistory: null, uploadBot: null,
-    mapping: null, confidence: {}, driversOn: false,
+    mapping: null, confidence: {}, refused: {}, driversOn: false,
     required: new Set(Object.entries(RULES.fields).filter(([, f]) => f.required).map(([k]) => k)) };
 
   function runDemo(kind) {
@@ -53,7 +53,15 @@
     // A use that needs a file nobody supplied isn't a verdict on this export, so it
     // stays off the panel until that file arrives.
     $("#uses").innerHTML = r.uses.filter((u) => !u.needs_file || u.file_supplied).map((u) => {
-      const bl = u.blockers.map((id) => `<li><a href="#check-${id}">${esc(r.checks[id].title)}</a></li>`).join("");
+      const bl = u.blockers.map((id) => {
+        const c = r.checks[id];
+        // C4 on a conflict is about named columns, so name them and say what to do.
+        const extra = c.conflict_labels && c.conflict_labels.length
+          ? `<span class="use-bl-why">${esc(c.conflict_labels.join(", "))}${
+              u.conflicts_are_context_only ? ", which this use only reads as context" : ""}. ${esc(c.fix || "")}</span>`
+          : "";
+        return `<li><a href="#check-${id}">${esc(c.title)}</a>${extra}</li>`;
+      }).join("");
       // Verdict words for a use. The check list keeps the outcome labels from the
       // rules ("Not in export", "Needs a human"); these read as answers, not states.
       const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready",
@@ -232,6 +240,7 @@
     const m = mapColumns({ headers: state.upload.headers, rules: RULES, records: state.upload.records });
     state.mapping = m.map;
     state.confidence = m.confidence;
+    state.refused = m.refused || {};
     renderMapping();
     $("#upload-status").textContent = `${state.upload.records.length.toLocaleString()} rows, ${state.upload.headers.length} columns read. Check the mapping, then run.`;
     renderRead();
@@ -302,7 +311,12 @@
   // How a field got its column. A guess is worth checking; a missing required field is
   // worth fixing before anything is run on it.
   function mapState(k) {
-    if (!state.mapping[k]) return state.required.has(k) ? "missing" : "none";
+    if (!state.mapping[k]) {
+      // A column was offered and turned down: a gap with a reason is not the same as a
+      // gap, and without saying so the only clue is a field that looks unmatched.
+      if (state.refused[k]) return "refused";
+      return state.required.has(k) ? "missing" : "none";
+    }
     return state.confidence[k] === "guess" ? "guess" : "name";
   }
   const MAP_NOTE = {
@@ -311,6 +325,12 @@
     missing: "Not found, and needed",
     none: "Not found",
   };
+  // The reason, with the column named, because the fix is to move that column.
+  function mapNote(k) {
+    const r = state.refused[k];
+    if (!r) return MAP_NOTE[mapState(k)];
+    return `“${r.header}” changes between a case's comment rows, so it isn't a case field. Map it as a comment field, or leave it.`;
+  }
 
   function renderMapping() {
     const opts = (sel) => `<option value="">Not in export</option>` + state.upload.headers.map((h) => `<option value="${esc(h)}"${h === sel ? " selected" : ""}>${esc(h)}</option>`).join("");
@@ -327,7 +347,7 @@
         : (f.level || "case") === "comment" ? " <span class='lvl'>per comment</span>" : "";
       return `<tr class="map-${st}"><td>${esc(f.label)}${mark}</td>
         <td><select id="map-${k}" data-k="${k}">${opts(state.mapping[k])}</select></td>
-        <td class="map-note">${esc(MAP_NOTE[st])}</td></tr>`;
+        <td class="map-note">${esc(mapNote(k))}</td></tr>`;
     }).join("");
     const missing = fields.filter(([k]) => mapState(k) === "missing").map(([, f]) => f.label);
     const guesses = fields.filter(([k]) => mapState(k) === "guess").length;
@@ -335,7 +355,10 @@
       missing.length ? `<p class="map-alert">Required ${missing.length > 1 ? "fields" : "field"} not found: <strong>${missing.map(esc).join(", ")}</strong>. Pick the right column below, or the checks that need ${missing.length > 1 ? "them" : "it"} can't run.</p>` : ""
     }${
       guesses ? `<p class="map-hint">${guesses} ${guesses > 1 ? "fields were" : "field was"} guessed from the values rather than the column name. Worth a look before you run.</p>` : ""
-    }<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th><th>How</th></tr></thead><tbody>${rows}</tbody></table></div>${
+    }${(() => {
+      const r = Object.entries(state.refused || {});
+      return r.length ? `<p class="map-hint">This export has one row per comment, so ${r.length > 1 ? "these columns were" : "this column was"} not mapped to a case field: <strong>${r.map(([, x]) => esc(x.header)).join(", ")}</strong>. ${r.length > 1 ? "Their values change" : "Its values change"} between rows of the same case, so ${r.length > 1 ? "they hold" : "it holds"} a value per comment rather than per case. Map ${r.length > 1 ? "them" : "it"} to a comment field if that's what ${r.length > 1 ? "they are" : "it is"}.</p>` : "";
+    })()}<div class="tbl"><table class="map"><thead><tr><th>Field</th><th>Your column</th><th>How</th></tr></thead><tbody>${rows}</tbody></table></div>${
       pii.length ? `<p class="pii">These columns look like personal data and are ignored unless you map them: ${pii.map(esc).join(", ")}.</p>` : ""}`;
     $("#mapping").querySelectorAll("select").forEach((s) => s.addEventListener("change", () => {
       const k = s.dataset.k;

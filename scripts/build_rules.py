@@ -1,5 +1,5 @@
 """Compile rules/rules.yaml to dist/rules.json and check internal references."""
-import json, sys, yaml
+import json, re, sys, yaml
 from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 r = yaml.safe_load((root / "rules/rules.yaml").read_text())
@@ -15,7 +15,9 @@ for s in r["signals"]:
 SCOPES = {"case", "bot", "both"}
 # `reads:` tags declared in engine code rather than in rules.yaml: the churn driver
 # flags are defined there, so a tag they use need not appear on a check or signal.
-ENGINE_READS = {"comment_text", "comment_count"}
+ENGINE_READS = {"comment_text", "comment_count",
+                # Matched against a signal's requires_fields, not against a `reads:` tag.
+                "conflicting_field"}
 errs += [f"field {k} file: {f['file']}" for k, f in r["fields"].items()
          if f.get("file", "case") not in SCOPES]
 errs += [f"use {u['id']} needs_file: {u['needs_file']}" for u in r["uses"]
@@ -55,6 +57,24 @@ errs += [f"comment_column_sources {v} -> {k}" for v, k in r.get("comment_column_
 # a citation for something that isn't there.
 if r.get("comment_column_sources") and not any(f.get("level") == "comment" for f in r["fields"].values()):
     errs.append("comment_column_sources is set but no field is level: comment")
+# Conflicts are scoped by what each check reads, so an undeclared or misspelt field
+# name would silently widen or narrow what a conflict holds back.
+for c in r["checks"]:
+    if "reads_fields" not in c:
+        errs.append(f"check {c['id']} does not say which fields it reads")
+        continue
+    errs += [f"check {c['id']} reads_fields {f!r}, which is not a field" for f in c["reads_fields"]
+             if f not in r["fields"]]
+# C4 names the dirty-collapse case separately, and the engine reports both.
+for key in ("conflict_title", "conflict_fix"):
+    if not next(c for c in r["checks"] if c["id"] == "C4").get(key):
+        errs.append(f"C4 has no {key}")
+# No caution may claim another check's outcome: it cannot know it, and saying so is how
+# "C4 passes" ended up printed on a run where C4 was failing.
+for name, c in r.get("cautions", {}).items():
+    if re.search(r"\b(C\d+|B\d+|AI\d+)\b.{0,24}\b(pass|passes|fail|fails|green|red|amber)\b", c.get("text", ""), re.I):
+        errs.append(f"caution {name} asserts another check's outcome in its text")
+
 # Cautions attach by `reads:` tag, so a tag nothing declares, or a declared tag no
 # caution covers, is a caution that will never fire or a reader that will never hear.
 cautions = r.get("cautions", {})

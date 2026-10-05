@@ -93,11 +93,20 @@ function scorePair(cand, variant) {
 const NAME_FLOOR = 45;       // below this, a name match is a coincidence, not a match
 const inScope = (f, scope) => { const s = f.file || "case"; return s === scope || s === "both"; };
 
-// The full result: the map, plus how each field was matched and how strongly.
+// The full result: the map, plus how each field was matched and how strongly, and
+// anything that was offered a field and refused it.
 export function mapColumns({ headers, rules, scope = "case", records = null }) {
   const fields = Object.entries(rules.fields).filter(([, f]) => inScope(f, scope));
   const order = Object.fromEntries(fields.map(([k], i) => [k, i]));
   const hv = new Map(headers.map((h) => [h, headerVariants(h)]));
+
+  // In a one-row-per-comment export, a column whose values change between rows of one
+  // case is not a case-level column, whatever its name says. Mapping it to one anyway
+  // is how a comment column ends up filed as `follow_up_of`: the collapse then has to
+  // pick one value per case and report the rest as a conflict, for a column that never
+  // belonged to the case. Needs the values, like shape inference does, so autoMap()
+  // below can't do it.
+  const varying = records && records.length ? varyingWithinCase({ headers, records, rules, scope }) : null;
 
   // Score every pair once.
   const pairs = [];
@@ -110,6 +119,7 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
         if (sc > best) best = sc;
       }
       if (best >= NAME_FLOOR) pairs.push({ key, header: h, score: best });
+
     }
   }
   // Best first, then stable by field order and header order, so the result never
@@ -117,13 +127,22 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
   pairs.sort((a, b) => b.score - a.score || order[a.key] - order[b.key]
     || headers.indexOf(a.header) - headers.indexOf(b.header));
 
-  const map = {}, confidence = {}, scores = {};
+  const map = {}, confidence = {}, scores = {}, refused = {};
   const usedHeader = new Set();
   for (const p of pairs) {
     if (map[p.key] || usedHeader.has(p.header)) continue;   // one field, one column, each way
+    // A case-level field will not take a column that changes within a case. The header
+    // is left free, so a comment field can still win it by name; if none does, the
+    // column stays unmapped and the refusal is reported rather than passed over.
+    if (varying && varying.has(p.header) && isCaseLevelField(rules.fields[p.key], p.key)) {
+      if (!refused[p.key]) refused[p.key] = { header: p.header, reason: "varies_within_case" };
+      continue;
+    }
     map[p.key] = p.header; usedHeader.add(p.header);
     confidence[p.key] = "name"; scores[p.key] = p.score;
   }
+  // A refusal only stands if nothing else claimed the field in the end.
+  for (const k of Object.keys(refused)) if (map[k]) delete refused[k];
 
   // Anything still unmatched may be inferable from what the column contains.
   if (records && records.length) {
@@ -133,7 +152,60 @@ export function mapColumns({ headers, rules, scope = "case", records = null }) {
       confidence[key] = "guess"; scores[key] = null;
     }
   }
-  return { map, confidence, scores };
+  return { map, confidence, scores, refused, shape: varying ? varying.shape : null };
+}
+
+// Case-level means: not a comment field, and not the case ID itself. The ID is the key
+// the rows are grouped by, so it cannot be judged on whether it varies within a group.
+const isCaseLevelField = (f, key) => key !== "case_id" && (f.level || "case") !== "comment";
+
+// Which headers change between rows of the same case, and whether this export is one
+// row per comment at all. Blanks are ignored: a repeated case field blanked on all but
+// the first row is how plenty of exports look, and the collapser treats the first real
+// value as the answer rather than as a disagreement.
+function varyingWithinCase({ headers, records, rules, scope }) {
+  // The case ID has to be found before anything can be grouped. Name match only, and
+  // in this scope, which is the same way the main pass would find it.
+  const idField = rules.fields.case_id;
+  if (!idField || !inScope(idField, scope)) return null;
+  const cands = ["case id", ...(idField.synonyms || [])].flatMap((c) => headerVariants(c));
+  let idHeader = null, bestScore = 0;
+  for (const h of headers) {
+    for (const c of cands) for (const v of headerVariants(h)) {
+      const sc = scorePair(c, v);
+      if (sc > bestScore && sc >= NAME_FLOOR) { bestScore = sc; idHeader = h; }
+    }
+  }
+  if (!idHeader) return null;
+
+  const groups = new Map();
+  for (const r of records) {
+    const id = String(r[idHeader] ?? "").trim();
+    if (!id) continue;                                      // nothing to group it by
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(r);
+  }
+  const multi = [...groups.values()].filter((rows) => rows.length > 1);
+  if (!multi.length) return null;                           // one row per case: nothing to judge
+
+  // Identical copies are not a comment export. Judge only cases with distinct rows, or
+  // a file that merely repeats a row would make every column look case-level anyway.
+  const cols = headers;
+  const distinctRows = (rows) => new Set(rows.map((r) => JSON.stringify(cols.map((h) => String(r[h] ?? ""))))).size;
+  const spans = multi.filter((rows) => distinctRows(rows) > 1);
+  if (!spans.length) return null;
+
+  const out = new Set();
+  out.shape = "one_row_per_comment";
+  for (const h of headers) {
+    if (h === idHeader) continue;
+    for (const rows of spans) {
+      const vals = new Set();
+      for (const r of rows) { const v = String(r[h] ?? "").trim(); if (v) vals.add(v); }
+      if (vals.size > 1) { out.add(h); break; }
+    }
+  }
+  return out;
 }
 
 // When no name matches, the values sometimes give a field away: a column of parseable
@@ -491,10 +563,13 @@ function unidentifiedRows(cases, rows) {
 function activeCautions(rules, L) {
   const out = [];
   for (const [id, c] of Object.entries(rules.cautions || {})) {
-    // Only one condition so far, and it belongs with the caution that depends on it.
+    // Each condition sits with the caution that depends on it.
     if (id === "dropped_comment_rows" && !(L.shape === "one_row_per_comment" && L.duplicate_rows)) continue;
+    if (id === "conflicting_case_field" && !L.conflicts.length) continue;
     out.push({ id, title: c.title, text: c.text.trim(), reads: c.applies_to_reads || [],
-      ...(id === "dropped_comment_rows" ? { rows: L.duplicate_rows } : {}) });
+      ...(id === "dropped_comment_rows" ? { rows: L.duplicate_rows } : {}),
+      ...(id === "conflicting_case_field" ? { fields: L.conflicts.map((x) => x.field),
+        labels: L.conflicts.map((x) => x.label) } : {}) });
   }
   return out;
 }
@@ -527,6 +602,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     // A check may carry its own amber title, for when "failed" would misdescribe
     // what the export holds (B11: the account and the timings are there).
     const title = outcome === "pass" ? d.title
+      : extra.conflict_cases && d.conflict_title ? d.conflict_title
       : outcome === "warn" && d.warn_title ? d.warn_title
       : d.failure_title || d.title;
     const heard = cautionsFor(cautions, d.reads);
@@ -612,7 +688,9 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
         ident.blank ? `${plural(ident.blank, "row")} ${ident.blank === 1 ? "carries" : "carry"} no case ID, so nothing tells ${ident.blank === 1 ? "it apart from another" : "them apart"}` : "",
        ].filter(Boolean).join(", and ") || "No repeated case IDs") + "." + dropNote;
   set("C4", has("case_id") ? evalThreshold(c4Value, checkDef.C4.threshold) : "not_in_export", c4Value, pct(c4Value, 1), c4Detail,
-    { shape: L.shape, duplicate_rows: L.duplicate_rows, conflict_cases: conflictCases, rows: n, cases: u });
+    { shape: L.shape, duplicate_rows: L.duplicate_rows, conflict_cases: conflictCases, rows: n, cases: u,
+      ...(L.conflicts.length ? { conflict_fields: L.conflicts.map((c) => c.field),
+        conflict_labels: L.conflicts.map((c) => c.label), fix: checkDef.C4.conflict_fix } : {}) });
 
   // B1
   const routing = ["owner", "group", "reason"].filter(has);
@@ -777,18 +855,51 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // the fix-first weighting below: a missing second file isn't a flaw in this one.
   const fileSupplied = (f) => (f === "bot" ? botRows.length > 0 : true);
   const rank = { pass: 0, warn: 1, needs_human: 1, fail: 2, not_in_export: 2 };
+
+  // A dirty collapse is a fault in named fields, so it holds back only the uses whose
+  // numbers come from one of them. A conflict in follow_up_of says nothing about how
+  // long cases took to resolve, and turning resolution time red for it sends people to
+  // fix the wrong thing. The use's fields are the union of what its checks read, so
+  // this follows the rules rather than a second list that could disagree with them.
+  const conflictFields = new Set(L.conflicts.map((c) => c.field));
+  const readsConflicted = (ids) => ids.some((id) =>
+    (checkDef[id].reads_fields || []).some((f) => conflictFields.has(f)));
+  // How far a conflict reaches into one use, in proportion to how the use uses the
+  // field. Required check reads it: the use's own numbers are wrong, so C4 stands and
+  // the use can go red. Only an optional check reads it: context is unreliable but the
+  // headline isn't, so amber. Nothing reads it: C4 is set aside for this use entirely.
+  // C4 itself is excluded from the test, because it reads the case ID and the case ID
+  // is the key the rows were grouped by, so it cannot be one of the conflicts.
+  const reach = (us) => {
+    const all = [...us.required, ...us.optional];
+    if (!conflictFields.size || !all.includes("C4")) return null;
+    // A repeated or blank case ID is not field-scoped: that is the cases themselves,
+    // and every use reads the cases. Only a dirty collapse is scoped.
+    if (!R.C4.conflict_cases || rank[R.C4.outcome] === 0) return null;
+    if (readsConflicted(us.required.filter((id) => id !== "C4"))) return null;
+    return { setAside: true, soft: readsConflicted(us.optional.filter((id) => id !== "C4")) };
+  };
+
   const uses = rules.uses.map((us) => {
-    const req = us.required.map((id) => R[id]);
+    const scoped = reach(us);
+    const at = (id) => (scoped && scoped.setAside && id === "C4" ? { ...R[id], outcome: "pass" } : R[id]);
+    const req = us.required.map(at);
     const worst = req.reduce((a, b) => (rank[b.outcome] > rank[a.outcome] ? b : a));
     let outcome = worst.outcome === "needs_human" ? "warn" : worst.outcome;
-    const optBad = us.optional.map((id) => R[id]).filter((c) => rank[c.outcome] >= 1);
+    const optBad = us.optional.map(at).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
     // Matching returns by timing alone isn't implemented, so the audit returns
     // can't tell for every conversation. That is this tool's limit, not a flaw in
     // the export, so it reports "needs a human" rather than amber "usable with care".
     if (us.id === "resolution_audit" && resolution_audit.basis === "account_and_timing") outcome = "needs_human";
+    // A conflict only an optional check reads costs the use its green, never its verdict.
+    if (scoped && scoped.soft && outcome === "pass") outcome = "warn";
     const blockers = req.filter((c) => rank[c.outcome] >= 1).concat(outcome !== "fail" && outcome !== "not_in_export" ? optBad : []);
+    if (scoped && scoped.soft && !blockers.includes(R.C4)) blockers.push(R.C4);
     return { id: us.id, title: us.title, outcome, blockers: blockers.map((c) => c.id),
+      // Said plainly on the use, because "not held back by C4" is only trustworthy if
+      // the reason it was set aside is visible next to the verdict.
+      ...(scoped && scoped.setAside ? { conflicts_set_aside: [...conflictFields], conflicts_are_context_only: !!scoped.soft } : {}),
       ...(us.needs_file ? { needs_file: us.needs_file, file_supplied: fileSupplied(us.needs_file) } : {}) };
   });
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
@@ -918,7 +1029,12 @@ function computeSignal(s, ctx) {
   const { R, useById, has, U, real, hist } = ctx;
   // Carried into every return below, locked ones included: a caution is a caveat on a
   // number, so it rides along with the signal rather than deciding whether it runs.
-  const heard = cautionsFor(ctx.cautions || [], s.reads);
+  // `reads` tags plus, for a conflict, the fields the signal says it requires: a signal
+  // built on a field whose value had to be picked from disagreeing rows is worth a
+  // caveat, and never worth a lock.
+  const conflicted = (ctx.cautions || []).filter((c) =>
+    c.id === "conflicting_case_field" && (s.requires_fields || []).some((f) => (c.fields || []).includes(f)));
+  const heard = [...cautionsFor(ctx.cautions || [], s.reads), ...conflicted];
   const base = { id: s.id, title: s.title, shows: s.shows, disclaimer: s.disclaimer,
     ...(heard.length ? { cautions: heard } : {}) };
   for (const f of s.requires_fields || []) if (!has(f)) return { ...base, state: "locked", reason: `Needs a ${ctx.rules.fields[f].label.toLowerCase()} column.` };

@@ -110,6 +110,7 @@ checks:
   - id: C1
     band: C
     dimension: completeness
+    reads_fields: [case_id, created_at, closed_at, status]
     title: Core columns are present
     failure_title: Core columns are missing
     metric: Share of the four core fields (case ID, created, closed, status) found in the export
@@ -121,6 +122,7 @@ checks:
   - id: C2
     band: C
     dimension: completeness
+    reads_fields: [owner_changes, group_changes, reopen_count]
     title: Case history is available
     failure_title: Only a final-state snapshot
     metric: History file present (green), count columns only (amber), neither (not in export)
@@ -131,6 +133,7 @@ checks:
   - id: C3
     band: C
     dimension: timeliness
+    reads_fields: [created_at]
     title: History covers the period analysed
     failure_title: History is shorter than the period analysed
     metric: Share of cases created after history tracking began
@@ -142,9 +145,18 @@ checks:
   - id: C4
     band: C
     dimension: uniqueness
+    reads_fields: [case_id]
     title: Each case appears once
     failure_title: Cases appear more than once
     warn_title: Some cases appear more than once
+    # A dirty collapse is a different fault from a repeated case ID and has to be named
+    # as one: "cases appear more than once" sends someone looking for duplicate rows
+    # that aren't there, when what they have is a comment column mapped as a case field.
+    conflict_title: A column mapped as a case field changes between comments
+    conflict_fix: >-
+      Map that column to a comment field instead, or leave it unmapped. If it really is
+      a case field, find what writes a different value per comment row: the collapse
+      keeps the first value it sees for each case and drops the rest.
     # Judged at case level, and what that means depends on the file's shape. The
     # engine picks by shape; both are this one question asked of the shape in hand.
     metric: >-
@@ -177,6 +189,7 @@ checks:
   - id: B1
     band: B
     dimension: completeness
+    reads_fields: [owner, group, reason]
     title: Routing fields are genuinely filled
     failure_title: Routing fields are mostly empty or placeholders
     metric: Lowest real fill rate across owner, group and reason (placeholders like "N/A" and "Other" count as empty)
@@ -188,6 +201,7 @@ checks:
   - id: B2
     band: B
     dimension: validity
+    reads_fields: [reason]
     title: Reasons aren't dominated by a catch-all
     failure_title: A catch-all reason swallows too many cases
     metric: Share of cases whose reason is blank or a catch-all such as "Other" or "General"
@@ -200,6 +214,7 @@ checks:
   - id: B3
     band: B
     dimension: consistency
+    reads_fields: [reason]
     title: Reason codes are a tidy set
     failure_title: Reason codes have sprawled
     metric: Near-duplicate reason pairs (green none, amber up to 3) and share of reasons used fewer than 5 times
@@ -210,6 +225,7 @@ checks:
   - id: B4
     band: B
     dimension: consistency
+    reads_fields: [created_at, closed_at, status]
     title: Dates make sense
     failure_title: Impossible dates found
     metric: Share of cases closed before they were created, or with a status that contradicts the close date
@@ -221,6 +237,7 @@ checks:
   - id: B5
     band: B
     dimension: validity
+    reads_fields: [wait_time]
     title: Resolution time separates customer wait
     failure_title: Can't separate customer wait from agent work
     metric: A customer-wait or on-hold time field is present and filled
@@ -231,6 +248,7 @@ checks:
   - id: B6
     band: B
     dimension: validity
+    reads_fields: [reopen_count, follow_up_of]
     title: Reopens can be counted
     failure_title: Reopens are invisible
     metric: Reopen count present (amber); plus follow-up cases linked to originals (green)
@@ -241,6 +259,7 @@ checks:
   - id: B7
     band: B
     dimension: validity
+    reads_fields: [escalated, group]
     title: The escalation flag is actually used
     failure_title: The escalation flag is rarely set
     metric: Share of cases flagged, compared with the share that history shows moving to engineering or tier 3
@@ -251,6 +270,7 @@ checks:
   - id: B8
     band: B
     dimension: completeness
+    reads_fields: [csat_score, status]
     title: Survey scores are linked to cases
     failure_title: Few closed cases carry a survey score
     metric: Share of closed cases with a CSAT score
@@ -262,6 +282,7 @@ checks:
   - id: B9
     band: B
     dimension: completeness
+    reads_fields: [account_id]
     title: Cases link to accounts
     failure_title: Many cases have no account
     metric: Share of cases with a real account ID
@@ -273,6 +294,7 @@ checks:
   - id: B10
     band: B
     dimension: completeness
+    reads_fields: [account_size, segment]
     title: You can control for account size or product
     failure_title: Nothing to control for
     metric: Account size or product/segment present and filled on 90% of cases
@@ -284,6 +306,7 @@ checks:
   - id: AI1
     band: B
     dimension: completeness
+    reads_fields: [subject, description, comment_body]
     title: Customers' words are captured
     failure_title: Little usable customer text
     metric: Share of cases whose subject or description has five or more words and isn't a stock phrase
@@ -299,6 +322,7 @@ checks:
   - id: AI2
     band: B
     dimension: validity
+    reads_fields: [reason]
     title: Reasons describe customer needs
     failure_title: Reasons describe teams, not customers
     metric: Share of volume whose reason names a team, tier or process ("Tier 2", "Escalated")
@@ -310,6 +334,7 @@ checks:
   - id: AI3
     band: B
     dimension: consistency
+    reads_fields: [reason]
     title: Reasons don't overlap
     failure_title: Reasons overlap
     metric: Reviewed by a person in this version; the report lists near-duplicate reasons to start from
@@ -320,6 +345,7 @@ checks:
   - id: AI4
     band: B
     dimension: completeness
+    reads_fields: [resolution_note, linked_article, status]
     title: Solutions are recorded
     failure_title: Few cases record how they were solved
     metric: Share of closed cases with a resolution note or linked article
@@ -331,6 +357,7 @@ checks:
   - id: AI5
     band: A
     dimension: fit for use
+    reads_fields: [reason]
     title: Demand is concentrated enough to automate
     failure_title: Demand is too scattered to automate easily
     metric: Share of cases with a real reason that fall in the ten most common reasons
@@ -342,6 +369,7 @@ checks:
   - id: AI6
     band: A
     dimension: fit for use
+    reads_fields: [created_at, channel]
     title: Volume meets published vendor minimums
     failure_title: Volume is below some vendors' published minimums
     metric: Total cases against Forethought's published 20,000+ historical tickets and 2,000+ email or chat tickets a month
@@ -352,6 +380,7 @@ checks:
   - id: B11
     band: B
     dimension: completeness
+    reads_fields: []   # judges the bot export, so no case field
     title: Bot conversations can be linked to later cases
     failure_title: Bot conversations aren't linked to later cases
     warn_title: Bot conversations can only be matched by account and timing
@@ -447,6 +476,14 @@ signals:
 # `applies_to_reads` matches the `reads:` tag a check, signal or driver flag
 # declares, so a new reader of comment text inherits the caution by saying so.
 cautions:
+  conflicting_case_field:
+    applies_to_reads: [conflicting_field]
+    title: A column mapped as a case field changes between comments
+    text: >-
+      This reads a field whose value differs between a case's own comment rows, so the
+      collapse kept the first value and dropped the rest. Either that column holds a
+      value per comment rather than per case, in which case map it to a comment field,
+      or something writes it per row and the number here is built on one row's answer.
   dropped_comment_rows:
     applies_to_reads: [comment_text, comment_count]
     title: Comment rows were dropped as identical
@@ -454,8 +491,8 @@ cautions:
       Rows identical in every column were dropped before this was measured, so the
       comment counts are a floor rather than a count. This often means the export
       carries no comment ID or timestamp: two short replies sent at the same minute,
-      such as "Thanks" twice, then look like one row sent twice. The cases themselves
-      are unaffected, which is why C4 passes.
+      such as "Thanks" twice, then look like one row sent twice. Dropping them changes
+      no case: each is still there once, with the same dates, owner and reason.
 
 # Parameters for the resolution audit. Every value is provisional: a starting
 # point to calibrate against real bot exports, not evidence. Don't quote them

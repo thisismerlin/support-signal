@@ -668,6 +668,135 @@ test("true duplicates, comment rows and a case-level conflict are told apart", (
   assert.equal(report.meta.rows, 9);
 });
 
+// ------------------------------- a comment column mapped as a case field
+// From a real comment-row export that needed one mapping corrected by hand. Three
+// faults, one cause: `parent_case` holds a value per comment, so it was auto-mapped to
+// the case field follow_up_of, the collapse then reported a conflict, and the conflict
+// turned resolution time red and was described as cases appearing more than once.
+
+const COMMENT_CONFLICT = [
+  "case_id,created_at,closed_at,status,owner,reason,parent_case,comment_created_at,comment_body,comment_public",
+  "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,LS-900,2026-01-01 10:00,First reply to the customer about this,Yes",
+  "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,LS-901,2026-01-02 10:00,Customer came back with more detail here,Yes",
+  // An identical repeated row as well, so the drop note fires on the same run.
+  "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,LS-902,2026-01-01 11:00,Only comment on this case at all,Yes",
+  "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,LS-902,2026-01-01 11:00,Only comment on this case at all,Yes",
+].join("\n");
+
+test("a column that changes between a case's comments is not mapped to a case field", () => {
+  const csv = parseCSV(COMMENT_CONFLICT);
+  const m = mapColumns({ headers: csv.headers, rules, records: csv.records });
+  assert.equal(m.shape, "one_row_per_comment");
+  assert.equal(m.map.follow_up_of, undefined, "parent_case varies within a case, so it is not follow_up_of");
+  assert.ok(!Object.values(m.map).includes("parent_case"), "and no other case field takes it either");
+
+  // The refusal is reported, with the column named, so the How column can explain it.
+  assert.deepEqual(m.refused.follow_up_of, { header: "parent_case", reason: "varies_within_case" });
+
+  // Columns that stay the same across a case's rows are mapped as before.
+  for (const k of ["case_id", "created_at", "closed_at", "status", "owner", "reason"])
+    assert.ok(m.map[k], `${k} should still map`);
+  // And the comment columns still win their own headers.
+  assert.equal(m.map.comment_body, "comment_body");
+  assert.equal(m.map.comment_at, "comment_created_at");
+
+  // With nothing mis-mapped there is no conflict left to report at all.
+  const report = runAudit({ records: csv.records, mapping: m.map, headers: csv.headers, rules });
+  assert.deepEqual(report.load.conflicts, []);
+  assert.equal(report.checks.C4.outcome, "pass");
+});
+
+test("a one-row-per-case export is unaffected by the varying-column rule", () => {
+  // Same rule, no grouping to judge: every case is one row, so nothing can vary.
+  const csv = parseCSV(["case_id,created_at,closed_at,status,owner,reason,parent_case",
+    "LS-1,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent A,Login issue,LS-900",
+    "LS-2,2026-01-03 09:00,2026-01-04 09:00,Solved,Agent B,Billing question,LS-901"].join("\n"));
+  const m = mapColumns({ headers: csv.headers, rules, records: csv.records });
+  assert.equal(m.shape, null);
+  assert.equal(m.map.follow_up_of, "parent_case", "a case export's parent_case is still follow_up_of");
+  assert.deepEqual(m.refused, {});
+});
+
+for (const f of Object.values(FILES)) {
+  test(`${f}: the varying-column rule changes no mapping in the demo exports`, () => {
+    const { headers, records } = load(f);
+    const m = mapColumns({ headers, rules, records });
+    assert.deepEqual(m.refused, {}, "no demo column is offered a case field and refused");
+    assert.deepEqual(m.map, autoMap(headers, rules), "and the map is what it always was");
+  });
+}
+
+// A conflict is a fault in named fields, so it reaches only as far as those fields are
+// read. These two cases are the same conflict machinery seen from both ends.
+test("a conflict only holds back the uses that read the conflicting field", () => {
+  const csv = parseCSV(COMMENT_CONFLICT);
+  // Forced, as a person would after correcting the mapping by hand.
+  const mapping = { ...mapColumns({ headers: csv.headers, rules, records: csv.records }).map, follow_up_of: "parent_case" };
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.deepEqual(report.load.conflicts.map((c) => c.field), ["follow_up_of"]);
+  assert.equal(report.checks.C4.outcome, "fail", "the export does have a problem, and C4 still says so");
+
+  // follow_up_of reaches resolution only through B6, which is optional there, so it
+  // costs the use its green and nothing more. Red is what this test exists to prevent.
+  const res = report.uses.find((u) => u.id === "resolution");
+  assert.notEqual(res.outcome, "fail", "a follow-up-of conflict must not turn resolution time red");
+  assert.equal(res.outcome, "warn");
+  assert.deepEqual(res.conflicts_set_aside, ["follow_up_of"]);
+  assert.equal(res.conflicts_are_context_only, true);
+
+  // 3. Named as what it is, not as duplicate cases, on the check and in the blocker.
+  assert.equal(report.checks.C4.title, "A column mapped as a case field changes between comments");
+  assert.deepEqual(report.checks.C4.conflict_labels, ["Follow-up of"]);
+  assert.match(report.checks.C4.fix, /Map that column to a comment field/);
+  assert.doesNotMatch(report.checks.C4.title, /appear more than once/);
+});
+
+test("a conflict in a field the use does read still holds it back", () => {
+  const csv = parseCSV(["case_id,created_at,closed_at,status,owner,reason,comment_created_at,comment_body,comment_public",
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-01 10:00,First reply to the customer about this,Yes",
+    "LS-1,2026-01-01 09:00,2026-01-09 09:00,Solved,Agent A,Login issue,2026-01-02 10:00,Customer came back with more detail here,Yes",
+    "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,2026-01-01 11:00,Only comment on this case at all,Yes",
+  ].join("\n"));
+  // Forced past the mapping rule, which would otherwise refuse a varying closed_at.
+  const mapping = { ...mapColumns({ headers: csv.headers, rules, records: csv.records }).map, closed_at: "closed_at" };
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.deepEqual(report.load.conflicts.map((c) => c.field), ["closed_at"]);
+  // Resolution time is built on closed_at, through C1 and B4, both required.
+  const res = report.uses.find((u) => u.id === "resolution");
+  assert.equal(res.outcome, "fail");
+  assert.ok(res.blockers.includes("C4"));
+  assert.equal(res.conflicts_set_aside, undefined, "not set aside: this use reads the field");
+});
+
+test("nothing on a run with a failing C4 claims that C4 passes", () => {
+  const csv = parseCSV(COMMENT_CONFLICT);
+  const mapping = { ...mapColumns({ headers: csv.headers, rules, records: csv.records }).map, follow_up_of: "parent_case" };
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.equal(report.checks.C4.outcome, "fail");
+  assert.ok(report.load.duplicate_rows > 0, "and a row was dropped, which is what used to print the claim");
+
+  // Everything the "What was read" box is built from, plus every caution it can show.
+  const said = [JSON.stringify(report.load), JSON.stringify(report.cautions)].join(" ");
+  assert.doesNotMatch(said, /C4 passes/i);
+  // Nothing may assert any check's outcome: a summary of what was read cannot know one.
+  assert.doesNotMatch(said, /\b(C\d+|B\d+|AI\d+)\b.{0,24}\b(passes|fails|is green|is red)\b/i);
+});
+
+test("a signal built on a conflicting field is cautioned, never locked", () => {
+  // open_risk requires last_update_at, so a conflict there is its business.
+  const csv = parseCSV(["case_id,created_at,closed_at,status,owner,reason,last_update_at,comment_created_at,comment_body,comment_public",
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-04 09:00,2026-01-01 10:00,First reply to the customer about this,Yes",
+    "LS-1,2026-01-01 09:00,2026-01-04 09:00,Solved,Agent A,Login issue,2026-01-06 09:00,2026-01-02 10:00,Customer came back with more detail here,Yes",
+    "LS-2,2026-01-01 09:00,2026-01-02 09:00,Solved,Agent B,Billing question,2026-01-02 09:00,2026-01-01 11:00,Only comment on this case at all,Yes",
+  ].join("\n"));
+  const mapping = { ...mapColumns({ headers: csv.headers, rules, records: csv.records }).map, last_update_at: "last_update_at" };
+  const report = runAudit({ records: csv.records, mapping, headers: csv.headers, rules });
+  assert.deepEqual(report.load.conflicts.map((c) => c.field), ["last_update_at"]);
+  const sig = report.signals.find((x) => x.id === "open_risk");
+  assert.ok(sig.cautions && sig.cautions.some((c) => c.id === "conflicting_case_field"));
+  assert.notEqual(sig.state, "locked", "a caveat on a number is not a reason to withhold it");
+});
+
 // The page shows what was read twice: beside the file picker before a run, and
 // under the verdicts after one. They must be the same summary, or the first one
 // reports counts the second contradicts.
