@@ -262,6 +262,24 @@ test("the demo exports map exactly as pinned", () => {
 // ----------------------------------------------------------- B11 and the audit
 
 const truthByConversation = () => new Map(load("larkspur_bot_truth.csv").records.map((t) => [t.bot_conversation_id, t]));
+// The report deliberately carries no conversation id: nothing out of the export is
+// echoed, and an identifier is not a category label. `by_conversation[i].n` is a
+// position among the claimed conversations in file order, so a test that supplied the
+// file can recover which conversation each row describes. Identifiers stay on this
+// side of the boundary, where they came from, instead of in the report.
+const claimedIdsInOrder = (b) => {
+  const claimedCol = b.mapping.bot_claimed_resolved;
+  const idCol = b.mapping.bot_conversation_id;
+  return b.records
+    .filter((r) => /^(y|yes|true|1|t)$/i.test(String(r[claimedCol] ?? "").trim()))
+    .map((r) => String(r[idCol] ?? ""));
+};
+// by_conversation keyed by the conversation id the test knows it fed in.
+const auditById = (a, b) => {
+  const ids = claimedIdsInOrder(b);
+  assert.equal(ids.length, a.by_conversation.length, "position join needs the same count");
+  return Object.fromEntries(a.by_conversation.map((c, i) => [ids[i], c]));
+};
 const B11 = rules.checks.find((c) => c.id === "B11");
 
 for (const [which, f] of Object.entries(BOT_FILES)) {
@@ -292,14 +310,36 @@ for (const [which, f] of Object.entries(BOT_FILES)) {
     assert.equal(a.conversations, stats.bot.conversations);
   });
 
+  // Joined by position, not by identifier. The report carries no conversation id by
+  // design -- nothing out of the export is echoed, and an id is not a category label --
+  // so `n` is a position among the claimed conversations in file order. The test knows
+  // that order because it supplied the file, which keeps this assertion exactly as
+  // strong as it was while the report itself stays free of identifiers.
   test(`bot ${which}: every conversation lands in its planted bucket`, () => {
     const T = truthByConversation();
     const key = which === "snapshot" ? "audit_snapshot" : "audit_with_history";
-    const wrong = a.by_conversation
-      .filter((c) => T.get(c.id)[key] !== c.bucket)
-      .map((c) => `${c.id} (${T.get(c.id).planted}): want ${T.get(c.id)[key]}, got ${c.bucket}`);
+    const byId = auditById(a, bot);
+    const wrong = Object.entries(byId)
+      .filter(([id, c]) => T.get(id)[key] !== c.bucket)
+      .map(([id, c]) => `#${c.n} (${T.get(id).planted}): want ${T.get(id)[key]}, got ${c.bucket}`);
     assert.deepEqual(wrong, []);
     assert.equal(a.by_conversation.length, stats.bot.claimed_resolved, "only claimed conversations are judged");
+    // `n` is a plain 1-based position, which is what makes the join above valid.
+    assert.deepEqual(a.by_conversation.map((c) => c.n), a.by_conversation.map((_, i) => i + 1));
+  });
+
+  // The whole point of removing the ids: a pasted report must not carry them.
+  test(`bot ${which}: the audit carries no identifier out of the export`, () => {
+    const ids = new Set(bot.records.map((r) => String(r[bot.mapping.bot_conversation_id] ?? "")).filter(Boolean));
+    for (const c of a.by_conversation) {
+      assert.equal(c.id, undefined, "a conversation id reached the report");
+      for (const m of c.matched) assert.equal(m.case_id, undefined, "a case id reached the report");
+      for (const m of c.matched) assert.equal(m.reason, undefined, "a reason value reached the report");
+    }
+    // And nowhere else in the audit either.
+    const blob = JSON.stringify(a);
+    const leaked = [...ids].filter((id) => id.length > 3 && blob.includes(id));
+    assert.deepEqual(leaked, [], "conversation ids appear somewhere in the audit");
   });
 
   test(`bot ${which}: no link goes unresolved and no theme unread`, () => {
@@ -330,7 +370,8 @@ for (const [which, f] of Object.entries(BOT_FILES)) {
 
   test(`the ${p.unrelated} unrelated repeat contacts are not contradicted`, () => {
     const T = truthByConversation();
-    const un = a.by_conversation.filter((c) => T.get(c.id).planted === "unrelated");
+    const byId = auditById(a, bot);
+    const un = Object.entries(byId).filter(([id]) => T.get(id).planted === "unrelated").map(([, c]) => c);
     assert.equal(un.length, p.unrelated);
     assert.deepEqual([...new Set(un.map((c) => c.bucket))], ["not_contradicted"]);
   });
@@ -339,7 +380,7 @@ for (const [which, f] of Object.entries(BOT_FILES)) {
     const T = truthByConversation();
     const reason = new Map(load("larkspur_snapshot.csv").records.map((c) => [c.case_id, c.reason]));
     const intent = new Map(load(BOT_FILES.with_history).records.map((b) => [b.bot_conversation_id, b.intent]));
-    const conv = new Map(a.by_conversation.map((c) => [c.id, c]));
+    const conv = new Map(Object.entries(auditById(a, bot)));
     // A planted follow-up whose reason isn't spelled the way the bot's intent is.
     const nd = [...T.values()].filter((t) => t.audit_with_history === "contradicted" && t.follow_up_case_id &&
       reason.get(t.follow_up_case_id) !== intent.get(t.bot_conversation_id));
@@ -381,7 +422,8 @@ test("a same-theme case three hours after the bot ended is contradicted", () => 
     bot: { records: conversations.records, mapping: autoMap(conversations.headers, rules, "bot") },
   });
   assert.equal(report.checks.B11.outcome, "pass");
-  const c = Object.fromEntries(report.resolution_audit.by_conversation.map((x) => [x.id, x]));
+  const c = auditById(report.resolution_audit,
+    { records: conversations.records, mapping: autoMap(conversations.headers, rules, "bot") });
   assert.equal(c["BOT-1"].bucket, "contradicted", "three hours is past the escalation window, so it is a return");
   assert.equal(c["BOT-1"].why, "same_theme");
   assert.equal(c["BOT-2"].bucket, "not_contradicted", "a different theme at three hours is just another case");
@@ -1115,7 +1157,7 @@ test("theme movers reports too few when no reason reaches its case minimum", () 
   const s = r.signals.find((x) => x.id === "theme_movers");
   assert.equal(s.state, "too_few", s.headline ?? s.reason);
   assert.match(s.reason, new RegExp(`${min} or more cases`));
-  assert.match(s.reason, /The most common, "Reason \d+", has \d+\./, "says how many it had");
+  assert.match(s.reason, /The most common, \u201cReason \d+\u201d, has \d+\./, "says how many it had");
   // The column itself is full, so this is the per-reason minimum biting, not the floor.
   assert.equal(r.checks.B1.outcome, "pass");
 });
@@ -1356,4 +1398,199 @@ test("the page handles every signal state the engine can emit", () => {
   assert.ok(seen.size >= 3, `only saw ${[...seen]}`);
   for (const state of seen)
     assert.ok(app.includes(state), `src/app.js never mentions the signal state "${state}"`);
+});
+
+// ============================================================ nothing echoes the export
+// The page promises the export never leaves the browser. It kept that promise and then
+// handed the reader a report to paste elsewhere: with a free-text column mapped to
+// contact reason, AI2's detail and the copied JSON carried hundreds of complete case
+// summaries, names and email addresses among them.
+//
+// The test maps one long free-text column to each field that echoes, in turn, and walks
+// the whole report. Each cell carries a marker past the cap, so any value reproduced
+// beyond it is caught wherever in the report it surfaced -- including places nothing
+// renders, like the audit's by_conversation, which the copy button serialises anyway.
+const CAP = rules.echo.max_chars;
+
+// Every string in the report, with the path that reached it, so a failure names the site.
+function walkStrings(node, path = "report", out = []) {
+  if (typeof node === "string") out.push([path, node]);
+  else if (Array.isArray(node)) node.forEach((v, i) => walkStrings(v, `${path}[${i}]`, out));
+  else if (node && typeof node === "object")
+    for (const [k, v] of Object.entries(node)) walkStrings(v, `${path}.${k}`, out);
+  return out;
+}
+
+// A prose cell: a short readable head, then a marker and a tail that must never appear.
+// The marker sits beyond the cap, so a clipped value keeps the head and loses the rest.
+const LEAK = "NEVER-ECHO-THIS";
+const proseCell = (i) => `Customer ${i} reports the overnight export has failed again since Tuesday `
+  + `${LEAK} and asks to be called back on 07700 900${String(i).padStart(3, "0")} or at person${i}@example.com`;
+
+// The fields a value can reach the report through, from the echo inventory: the
+// category and id fields quoted in a detail, a signal row, a headline or an extra.
+const ECHOING_FIELDS = ["reason", "group", "owner", "account_id", "exit_event", "channel", "priority", "account_size", "segment"];
+
+for (const field of ECHOING_FIELDS) {
+  test(`no report string echoes a long ${field} value past the cap`, () => {
+    const { headers, records } = load("larkspur_snapshot.csv");
+    const col = headers.find((h) => h === field) ?? field;
+    const rows = records.map((r, i) => ({ ...r, [col]: proseCell(i) }));
+    const mapping = autoMap(headers, rules);
+    // Mapped by hand, which is one of the three routes a column can arrive by and the
+    // one no matcher gate can stop.
+    mapping[field] = col;
+    const report = runAudit({ records: rows, mapping, headers, rules });
+
+    const strings = walkStrings(report);
+    assert.ok(strings.length > 50, "the walk found almost nothing, so it proves nothing");
+
+    // 1. The marker, and anything after it, must appear nowhere at all.
+    const leaked = strings.filter(([, v]) => v.includes(LEAK) || v.includes("@example.com") || /07700 900\d{3}/.test(v));
+    assert.deepEqual(leaked.map(([p]) => p), [], `a value leaked past the cap into: ${leaked.map(([p]) => p).join(", ")}`);
+
+    // 2. And no run of any source value longer than the cap, marker or not. This is the
+    //    general form: it catches a site that quotes the readable head at full length.
+    const sources = [...new Set(rows.map((r) => r[col]))];
+    const tooLong = [];
+    for (const [path, v] of strings) {
+      for (const src of sources) {
+        for (let start = 0; start + CAP + 1 <= src.length; start += 8) {
+          const run = src.slice(start, start + CAP + 1);
+          if (v.includes(run)) { tooLong.push(`${path}: ${run.slice(0, 30)}...`); break; }
+        }
+        if (tooLong.length) break;
+      }
+      if (tooLong.length) break;
+    }
+    assert.deepEqual(tooLong, [], `a value exceeded ${CAP} characters at ${tooLong[0]}`);
+  });
+}
+
+// The guard must not be satisfied by emitting nothing anywhere: a report that says
+// nothing passes a leak test trivially. On a genuine short-label column the quotes
+// still appear, so the cap is doing the work rather than a blanket silence.
+test("a genuine category column is still quoted, so the guard is not blanket silence", () => {
+  const { report } = audit("snapshot");
+  const quotes = walkStrings(report).filter(([, v]) => /“[^”]+”/.test(v));
+  assert.ok(quotes.length > 0, "no value is quoted anywhere, so the leak tests prove nothing");
+  for (const [path, v] of quotes)
+    for (const m of v.matchAll(/“([^”]*)”/g))
+      assert.ok(m[1].length <= CAP, `${path} quotes ${m[1].length} characters: ${m[1].slice(0, 50)}`);
+});
+
+// The leak tests above are satisfied by refusal: a prose column is turned down
+// outright, so they never exercise the character cap. This one does. The values are
+// single-token labels, short enough on average for the column to count as a category
+// and so to be quotable, but each one longer than the cap on its own.
+test("a quotable value longer than the cap is clipped, not refused", () => {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const LABELS = [
+    "Billing-and-invoicing-escalation-tier-two-queue-alpha",
+    "Login-and-single-sign-on-failure-after-the-upgrade-bravo",
+    "Payroll-run-blocked-by-a-stale-scheduled-credential-charlie",
+  ];
+  const rows = records.map((r, i) => ({ ...r, reason: LABELS[i % LABELS.length] }));
+  const report = runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+
+  // Quotable: one word each, so this is a category as far as the guard is concerned.
+  assert.notEqual(report.checks.B3.outcome, "free_text", "these are labels, not prose");
+
+  const strings = walkStrings(report);
+  const quotes = [];
+  for (const [path, v] of strings)
+    for (const m of v.matchAll(/“([^”]*)”/g)) quotes.push([path, m[1]]);
+  assert.ok(quotes.length > 0, "nothing was quoted, so the clip is still untested");
+  for (const [path, q] of quotes) assert.ok(q.length <= CAP, `${path} quotes ${q.length} chars`);
+
+  // At least one quote is a clipped label rather than a short placeholder, or this
+  // test would pass on a report that only ever quoted "(blank)".
+  const clipped = quotes.filter(([, q]) => q.endsWith("…"));
+  assert.ok(clipped.length > 0, `no quote was clipped; saw ${JSON.stringify(quotes.slice(0, 4))}`);
+  // And the clip keeps the readable head, so it is still worth printing.
+  for (const [, q] of clipped) assert.ok(LABELS.some((l) => l.startsWith(q.slice(0, -1))), q);
+
+  // No full label survives anywhere, including the signal rows and the JSON-only extras.
+  for (const [path, v] of strings)
+    for (const l of LABELS) assert.ok(!v.includes(l), `${path} carries a whole label`);
+});
+
+// ---------------------------------------- a category field holding free text
+// 468 distinct values over 543 cases, sentences long, was accepted as contact reason
+// and judged as a reason taxonomy: near-duplicate pairs, team-type wording, demand
+// concentration, all computed over prose. However the column arrived -- by name, by
+// guess, or mapped by hand, which no matcher gate can stop -- it is not a category.
+function proseReason() {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const rows = records.map((r, i) => ({
+    ...r,
+    reason: `Customer ${i} could not complete the overnight export and asked us to look at the scheduled job`,
+  }));
+  const mapping = autoMap(headers, rules);
+  mapping.reason = "reason";
+  return runAudit({ records: rows, mapping, headers, rules });
+}
+
+for (const id of ["B2", "B3", "AI2", "AI3", "AI5"]) {
+  test(`${id} refuses to judge a free-text column as categories`, () => {
+    const c = proseReason().checks[id];
+    assert.equal(c.outcome, "free_text", c.detail);
+    assert.equal(c.free_text_field, "reason");
+    // What it found, and where the column probably belongs.
+    assert.match(c.detail, /distinct values across/);
+    assert.match(c.detail, /averaging \d+(\.\d+)? words/);
+    assert.match(c.detail, /Resolution note/, "says where to put it instead");
+    // And a title that does not assert the check's own ordinary conclusion.
+    const def = rules.checks.find((x) => x.id === id);
+    assert.notEqual(c.title, def.title, `${id} claims its pass case`);
+    assert.notEqual(c.title, def.failure_title, `${id} claims its failure case`);
+  });
+}
+
+test("signals grouped by reason refuse a free-text column too", () => {
+  const r = proseReason();
+  for (const id of ["theme_movers", "self_help", "keep_human"]) {
+    const s = r.signals.find((x) => x.id === id);
+    assert.equal(s.state, "free_text", id);
+    assert.match(s.reason, /Resolution note/, id);
+    assert.equal(s.headline, undefined, `${id} must not report a headline`);
+    assert.deepEqual(s.rows ?? [], [], `${id} must not table prose`);
+  }
+});
+
+// The floor comes first. Two long values are too few to tell anything about, including
+// whether they are free text, so a confident shape diagnosis would be the wrong answer.
+test("too few to judge beats looks-like-free-text", () => {
+  const { headers, records } = load("larkspur_snapshot.csv");
+  const byCase = new Map();
+  for (const r of records) if (!byCase.has(r.case_id)) byCase.set(r.case_id, r);
+  const keep = new Set([...byCase.keys()].slice(0, 2));
+  const rows = records.map((r) => (keep.has(r.case_id)
+    ? { ...r, reason: "Customer could not complete the overnight export and asked us to look at the job" }
+    : { ...r, reason: "" }));
+  const r = runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+  assert.equal(r.checks.AI2.outcome, "too_few", r.checks.AI2.detail);
+  assert.equal(r.checks.B3.outcome, "too_few");
+});
+
+// And a real taxonomy is untouched: the demo exports keep every verdict they had, which
+// the pinned expectations already assert. This pins the gate's own silence on them.
+test("a genuine category column is not called free text", () => {
+  for (const which of ["snapshot", "history", "comments"]) {
+    const { report } = audit(which);
+    for (const id of ["B2", "B3", "AI2", "AI3", "AI5"])
+      assert.notEqual(report.checks[id].outcome, "free_text", `${which} ${id}`);
+    for (const s of report.signals) assert.notEqual(s.state, "free_text", `${which} ${s.id}`);
+  }
+});
+
+// The thresholds are declared, provisional, and generous enough that the case which
+// prompted them sits well clear of both.
+test("the free-text thresholds are declared and marked provisional", () => {
+  const ft = rules.category_free_text;
+  assert.ok(ft.max_unique_share > 0 && ft.max_unique_share <= 1);
+  assert.ok(ft.max_avg_words >= 1);
+  assert.equal(ft.provisional, true);
+  // 468 distinct over 543 cases is 0.86 unique: comfortably past the line, as it should be.
+  assert.ok(468 / 543 > ft.max_unique_share, "the reported case must trip the share test");
 });

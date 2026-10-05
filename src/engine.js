@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.6.0";
+export const ENGINE_VERSION = "0.7.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -693,6 +693,20 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // met tells the reader the wrong thing about their data.
   const floorWanted = (e) => (e.shortCount && e.shortShare ? `${e.minN} cases and ${pct(e.minS, 0)}`
     : e.shortCount ? `${e.minN} cases` : `${pct(e.minS, 0)} of cases`);
+  // The free-text verdict, built from the rules' own template. Only counts and names
+  // are substituted; nothing out of the export goes in, which is why this is safe to
+  // print about a column it is refusing to quote.
+  const freeTextWords = (key, e) => String(FT[key] || "")
+    .replace("{field}", rules.fields[e.field].label)
+    .replace("{column}", map[e.field] || "the comment rows")
+    .replace("{distinct}", e.distinct.toLocaleString())
+    .replace("{cases}", e.n.toLocaleString())
+    .replace("{words}", e.avgWords.toFixed(1));
+  // The first field a check or signal declares is a category but isn't.
+  const notCategory = (def) => {
+    for (const k of def.requires_category || []) { const e = freeText(k); if (e) return e; }
+    return null;
+  };
   // The first field a check or signal declares that doesn't clear the floor.
   const shortOn = (def) => {
     for (const k of def.requires_values || []) {
@@ -701,6 +715,80 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     }
     return null;
   };
+  // ---------- what a mapped column actually holds, and what may be quoted from it ----------
+  // One profile per field, built from the collapsed cases. Two callers: the echo guard
+  // below, which refuses to quote prose, and the free-text gate, which refuses to judge
+  // prose as a category. Both ask the same question of the data, so they ask it once.
+  const contentCache = new Map();
+  const content = (k) => {
+    if (contentCache.has(k)) return contentCache.get(k);
+    const vals = [];
+    for (const c of U) { const v = c[k]; if (real(v) && String(v).trim()) vals.push(String(v).trim()); }
+    const n = vals.length;
+    const prof = n ? {
+      n, distinct: new Set(vals).size, unique: new Set(vals).size / n,
+      avgWords: vals.reduce((a, v) => a + v.split(/\s+/).length, 0) / n,
+      avgLen: vals.reduce((a, v) => a + v.length, 0) / n,
+    } : { n: 0, distinct: 0, unique: 0, avgWords: 0, avgLen: 0 };
+    contentCache.set(k, prof);
+    return prof;
+  };
+
+  // A column mapped to a category field that is really free text. However it was
+  // mapped -- by name, by guess or by hand -- 468 sentences are not a reason taxonomy.
+  const FT = rules.category_free_text || {};
+  const freeText = (k) => {
+    if (!has(k) || (rules.fields[k].shape || "") !== "category") return null;
+    const p = content(k);
+    // Judging the shape of a column needs as many values as judging its content does,
+    // and for the same reason, so it borrows the evidence floor's count rather than
+    // inventing a second number. Two distinct values are 100% unique without being
+    // free text, and B2 -- which has no content floor, because counting blanks is its
+    // job -- reported "looks like free text" about two ordinary reason codes.
+    if (p.n < (FLOOR.min_cases ?? 0)) return null;
+    const wide = p.unique > (FT.max_unique_share ?? 1);
+    const wordy = p.avgWords > (FT.max_avg_words ?? Infinity);
+    return wide || wordy ? { field: k, ...p, wide, wordy } : null;
+  };
+
+  // ---------- the echo guard ----------
+  // Nothing out of the export reaches the report except through here. The page keeps
+  // its promise that the file never leaves the browser and then hands the reader a
+  // report to paste elsewhere; with a prose column mapped to contact reason that
+  // report carried hundreds of case summaries, names and email addresses included.
+  const ECHO = rules.echo || {};
+  const MAX_CHARS = ECHO.max_chars ?? 40;
+  const MAX_EXAMPLES = ECHO.max_examples ?? 3;
+  // May this field's values be quoted at all? Only a short repeated label may: text is
+  // prose by definition, and a category column holding prose is refused outright
+  // rather than clipped, because the first 40 characters of a case summary are still
+  // a case summary.
+  const quotable = (k) => {
+    const shape = rules.fields[k]?.shape || "";
+    if (shape === "text") return false;
+    if (shape !== "category") return true;            // flags, numbers, dates, ids
+    const p = content(k);
+    return !(p.n && (p.avgWords > (FT.max_avg_words ?? Infinity) || p.avgLen > MAX_CHARS * 2));
+  };
+  // One value, clipped. Whitespace is collapsed first so a multi-line cell cannot
+  // smuggle a paragraph past a character count.
+  const clip = (v) => {
+    const t = String(v ?? "").replace(/\s+/g, " ").trim();
+    return t.length <= MAX_CHARS ? t : `${t.slice(0, MAX_CHARS - 1)}\u2026`;
+  };
+  // A quoted list: capped in length and in count, and empty when the column may not be
+  // quoted. Callers must handle empty, which is the point -- there is no fallback that
+  // quietly prints the values anyway.
+  const examples = (k, vals) => (quotable(k) ? vals.slice(0, MAX_EXAMPLES).map(clip) : []);
+  const quoted = (k, vals) => examples(k, vals).map((t) => `\u201c${t}\u201d`).join(", ");
+  // Signal rows whose first cell is a value out of the export. A column the guard
+  // refuses yields no rows at all: a table of clipped case summaries is the same
+  // disclosure as a sentence of them, and a table of blanks is just confusing.
+  const rowsOf = (k, items, build) => (quotable(k) ? items.map((x) => {
+    const row = build(x);
+    return [clip(row[0]), ...row.slice(1)];
+  }) : []);
+
   // The same shortfall said as a reason rather than as a check detail, for a signal.
   const shortReason = (k, e) => {
     const label = rules.fields[k].label.toLowerCase();
@@ -729,7 +817,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     // can be used: both the pass title and the failure title are claims about the
     // values, and on two reasons "Reasons describe teams, not customers" is as
     // baseless as "Reasons describe customer needs".
-    const title = extra.title_from && d[extra.title_from] ? d[extra.title_from]
+    const title = extra.title_text ? extra.title_text
+      : extra.title_from && d[extra.title_from] ? d[extra.title_from]
       : extra.too_few_field && d.too_few_title ? d.too_few_title
       : outcome === "pass" ? d.title
       : extra.conflict_cases && d.conflict_title ? d.conflict_title
@@ -838,17 +927,29 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const realReasons = [...reasonCounts].filter(([v]) => real(v));
 
   // B2
+  const b2Free = has("reason") ? notCategory(checkDef.B2) : null;
   if (!has("reason")) set("B2", "not_in_export", null, "No reason", "No contact reason column.");
+  else if (b2Free) set("B2", "free_text", null, "Free text", freeTextWords("text", b2Free),
+    { title_text: freeTextWords("title", b2Free), free_text_field: b2Free.field });
   else {
     const catchAll = U.filter((c) => !real(c.reason)).length / u;
-    const top = [...reasonCounts].filter(([v]) => !real(v)).sort((a, b) => b[1] - a[1]).map(([v, k]) => `"${v || "(blank)"}" ${pct(k / u)}`);
-    set("B2", evalThreshold(catchAll, checkDef.B2.threshold), catchAll, pct(catchAll), `${pct(catchAll)} of cases sit in blank or catch-all reasons: ${top.slice(0, 3).join(", ")}.`);
+    // The catch-all labels are placeholders by construction, so they are the one thing
+    // here safe to name -- and they still go through the guard, because "safe by
+    // construction" is how the other twelve sites were justified too.
+    const top = [...reasonCounts].filter(([v]) => !real(v)).sort((a, b) => b[1] - a[1]);
+    const named = examples("reason", top.map(([v]) => v || "(blank)"))
+      .map((t, i) => `\u201c${t}\u201d ${pct(top[i][1] / u)}`).join(", ");
+    set("B2", evalThreshold(catchAll, checkDef.B2.threshold), catchAll, pct(catchAll),
+      `${pct(catchAll)} of cases sit in blank or catch-all reasons${named ? `: ${named}` : ""}.`);
   }
 
   // B3 near-duplicates
   const nearDups = [];
   const b3Short = has("reason") ? shortOn(checkDef.B3) : null;
+  const b3Free = has("reason") && !b3Short ? notCategory(checkDef.B3) : null;
   if (b3Short) set("B3", "too_few", null, plural(b3Short.n, "reason"), tooFewDetail(b3Short), { too_few_field: b3Short.field });
+  else if (b3Free) set("B3", "free_text", null, "Free text", freeTextWords("text", b3Free),
+    { title_text: freeTextWords("title", b3Free), free_text_field: b3Free.field });
   else if (has("reason")) {
     const names = realReasons.map(([v]) => v);
     for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++)
@@ -856,8 +957,17 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const rare = realReasons.filter(([, k]) => k < 5).length;
     const tail = realReasons.length ? rare / realReasons.length : 0;
     const outcome = nearDups.length === 0 && tail < 0.2 ? "pass" : nearDups.length <= 3 ? "warn" : "fail";
+    // Both the sentence and the `pairs` extra are capped. The extra mattered most: it
+    // was raw, uncapped, and invisible in the page, so it reached the clipboard
+    // without ever being seen on screen.
+    const shown = nearDups.slice(0, MAX_EXAMPLES)
+      .map(([x, y]) => [clip(x), clip(y)]).filter(() => quotable("reason"));
+    const pairText = shown.length
+      ? `Near-duplicates: ${shown.map(([x, y]) => `\u201c${x}\u201d / \u201c${y}\u201d`).join(", ")}${nearDups.length > shown.length ? `, and ${nearDups.length - shown.length} more` : ""}. `
+      : nearDups.length ? `${plural(nearDups.length, "near-duplicate pair")} found. ` : "";
     set("B3", outcome, nearDups.length, `${nearDups.length} pairs`,
-      `${realReasons.length} distinct reasons. ${nearDups.length ? "Near-duplicates: " + nearDups.map(([x, y]) => `"${x}" / "${y}"`).join(", ") + ". " : ""}${rare} used fewer than 5 times.`, { pairs: nearDups });
+      `${realReasons.length} distinct reasons. ${pairText}${rare} used fewer than 5 times.`,
+      { pairs: shown, pairs_found: nearDups.length });
   } else set("B3", "not_in_export", null, "No reason", "No contact reason column.");
 
   // B4
@@ -926,21 +1036,41 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   if (!has("reason")) set("AI2", "not_in_export", null, "No reason", "No contact reason column.");
   else if (shortOn(checkDef.AI2)) { const e = shortOn(checkDef.AI2);
     set("AI2", "too_few", null, plural(e.n, "reason"), tooFewDetail(e), { too_few_field: e.field }); }
+  else if (notCategory(checkDef.AI2)) { const e = notCategory(checkDef.AI2);
+    set("AI2", "free_text", null, "Free text", freeTextWords("text", e),
+      { title_text: freeTextWords("title", e), free_text_field: e.field }); }
   else {
     const words = rules.team_words;
     const teamy = (v) => words.some((w) => new RegExp(`\\b${w}\\b`, "i").test(v));
     const tv = realReasons.filter(([v]) => teamy(v));
     const share = tv.reduce((s, [, k]) => s + k, 0) / u;
+    // This sentence quoted every team-type value it found, at whatever length they
+    // came. A prose cell containing the word "team" was reproduced in full, and with
+    // hundreds of them the detail string became the export.
+    const named = quoted("reason", tv.map(([v]) => v));
+    const more = tv.length > MAX_EXAMPLES ? `, and ${tv.length - MAX_EXAMPLES} more` : "";
     set("AI2", evalThreshold(share, checkDef.AI2.threshold), share, pct(share),
-      tv.length ? `${pct(share)} of cases use team-type reasons: ${tv.map(([v]) => `"${v}"`).join(", ")}.` : "Reasons describe customer needs.");
+      !tv.length ? "Reasons describe customer needs."
+        : named ? `${pct(share)} of cases use team-type reasons: ${named}${more}.`
+        : `${pct(share)} of cases use team-type reasons, across ${plural(tv.length, "value")}.`);
   }
 
   // AI3. Telling someone to sample cases from similar-sounding reasons is useless
   // advice when the reason column is empty, so it says what to fix instead.
   const ai3Short = has("reason") ? shortOn(checkDef.AI3) : null;
   if (ai3Short) set("AI3", "too_few", null, plural(ai3Short.n, "reason"), tooFewDetail(ai3Short), { too_few_field: ai3Short.field });
-  else set("AI3", has("reason") ? "needs_human" : "not_in_export", null, "Review",
-    nearDups.length ? `Start with the near-duplicates found: ${nearDups.map(([x, y]) => `"${x}" / "${y}"`).join(", ")}. Then sample cases from similar reasons.` : "Sample cases from similar-sounding reasons and check they really differ.");
+  else if (has("reason") && notCategory(checkDef.AI3)) { const e = notCategory(checkDef.AI3);
+    set("AI3", "free_text", null, "Free text", freeTextWords("text", e),
+      { title_text: freeTextWords("title", e), free_text_field: e.field }); }
+  else {
+    const shown = quotable("reason")
+      ? nearDups.slice(0, MAX_EXAMPLES).map(([x, y]) => `\u201c${clip(x)}\u201d / \u201c${clip(y)}\u201d`).join(", ")
+      : "";
+    set("AI3", has("reason") ? "needs_human" : "not_in_export", null, "Review",
+      shown ? `Start with the near-duplicates found: ${shown}. Then sample cases from similar reasons.`
+        : nearDups.length ? `Start with the ${plural(nearDups.length, "near-duplicate pair")} the report found, then sample cases from similar reasons.`
+        : "Sample cases from similar-sounding reasons and check they really differ.");
+  }
 
   // AI4
   if (!has("resolution_note") && !has("linked_article")) set("AI4", "not_in_export", null, "Not found", "No resolution note or article column.");
@@ -956,7 +1086,10 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // An empty reason column and a column of nothing but team-type reasons both leave
   // nothing to measure, but they are different problems with different fixes.
   const ai5Short = has("reason") ? shortOn(checkDef.AI5) : null;
+  const ai5Free = has("reason") && !ai5Short ? notCategory(checkDef.AI5) : null;
   if (ai5Short) set("AI5", "too_few", null, plural(ai5Short.n, "reason"), tooFewDetail(ai5Short), { too_few_field: ai5Short.field });
+  else if (ai5Free) set("AI5", "free_text", null, "Free text", freeTextWords("text", ai5Free),
+    { title_text: freeTextWords("title", ai5Free), free_text_field: ai5Free.field });
   else if (!needTotal) set("AI5", has("reason") ? "needs_human" : "not_in_export", null, "n/a", "No usable reasons to measure.");
   else {
     const top10 = needReasons.slice(0, 10).reduce((s, [, k]) => s + k, 0) / needTotal;
@@ -1016,7 +1149,7 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // too_few ranks with needs_human: it holds a use back from green without being a
   // verdict on the export, and it maps to "can't tell yet" below rather than to amber
   // "usable with care", which would be too generous about data nothing can be read from.
-  const rank = { pass: 0, warn: 1, needs_human: 1, too_few: 1, fail: 2, not_in_export: 2 };
+  const rank = { pass: 0, warn: 1, needs_human: 1, too_few: 1, free_text: 1, fail: 2, not_in_export: 2 };
 
   // A dirty collapse is a fault in named fields, so it holds back only the uses whose
   // numbers come from one of them. A conflict in follow_up_of says nothing about how
@@ -1073,7 +1206,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     const at = (id) => (scoped && scoped.setAside && id === "C4" ? { ...R[id], outcome: "pass" } : R[id]);
     const req = us.required.map(at);
     const worst = req.reduce((a, b) => (rank[b.outcome] > rank[a.outcome] ? b : a));
-    let outcome = worst.outcome === "needs_human" ? "warn" : worst.outcome === "too_few" ? "needs_human" : worst.outcome;
+    let outcome = worst.outcome === "needs_human" ? "warn"
+      : worst.outcome === "too_few" || worst.outcome === "free_text" ? "needs_human" : worst.outcome;
     const optBad = us.optional.map(at).filter((c) => rank[c.outcome] >= 1);
     if (outcome === "pass" && optBad.length) outcome = "warn";
     // Matching returns by timing alone isn't implemented, so the audit returns
@@ -1098,7 +1232,8 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   const useById = Object.fromEntries(uses.map((x) => [x.id, x]));
 
   // ---------- signals ----------
-  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, belowFloor, shortReason, U, real, rules, hist, cautions }));
+  const signals = rules.signals.map((s) => computeSignal(s, { R, useById, has, hasValues, belowFloor, shortReason,
+    freeText, freeTextWords, quotable, clip, rowsOf, U, real, rules, hist, cautions }));
 
   // ---------- fix first ----------
   const blockCount = {};
@@ -1186,14 +1321,13 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
   let claimed = 0, out_of_scope = 0, unreadable_theme_cases = 0, unresolved_links = 0;
 
   for (const r of botRows) {
-    const id = bg(r, "bot_conversation_id");
     if (!truthy(bg(r, "bot_claimed_resolved"))) { out_of_scope++; continue; }
     claimed++;
     if (basis !== "case_links") {
       // Amber B11 means the links would have to be inferred from account and
       // timing. That isn't implemented, and guessing would be worse than silence.
       buckets.cant_tell++;
-      by_conversation.push({ id, bucket: "cant_tell", why: null, matched: [] });
+      by_conversation.push({ n: by_conversation.length + 1, bucket: "cant_tell", why: null, matched: [] });
       continue;
     }
     const end = parseDate(bg(r, "bot_ended_at"));
@@ -1212,14 +1346,14 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
         // A human picking it up this soon is the bot handing over, not the
         // customer coming back. Theme isn't asked: the handover is the evidence.
         flags.escalated = true;
-        matched.push({ case_id: cid, lag_days: lag / DAY, as: "escalated", reason: c.reason });
+        matched.push({ lag_days: lag / DAY, as: "escalated" });
         continue;
       }
       if (!themeReadable) continue;
       if (!real(c.reason)) { unreadable_theme_cases++; continue; }
       if (sameTheme(c.reason, intent, normalise)) {
         flags.same_theme = true;
-        matched.push({ case_id: cid, lag_days: lag / DAY, as: "same_theme", reason: c.reason });
+        matched.push({ lag_days: lag / DAY, as: "same_theme" });
       }
     }
     const why = flags.reopened ? "reopened" : flags.escalated ? "escalated" : flags.same_theme ? "same_theme" : null;
@@ -1234,7 +1368,12 @@ function resolutionAudit({ bot, botRows, U, byIdKey, rules, basis, real }) {
         ? 0 : Math.min(...matched.filter((m) => m.as === "same_theme").map((m) => m.lag_days));
       for (const w of cumulative) if (soonest <= w.days) w.contradicted++;
     }
-    by_conversation.push({ id, bucket, why, flags, matched });
+    // No conversation id, no case ids, no reason text. The rule is that nothing out of
+    // the export is echoed except a short category label, and an identifier is not one.
+    // This array is never rendered, only serialised by the copy button, so what it
+    // cost was traceability in a pasted report: `n` is a position within this report,
+    // enough to reconcile against the bucket counts and useless anywhere else.
+    by_conversation.push({ n: by_conversation.length + 1, bucket, why, flags, matched });
   }
   return { ...base, conversations: botRows.length, claimed, out_of_scope, buckets,
     contradicted_cumulative: cumulative, contradicted_by, unreadable_theme_cases, unresolved_links, by_conversation };
@@ -1263,6 +1402,12 @@ function computeSignal(s, ctx) {
     const e = ctx.belowFloor(f);
     if (e) return { ...base, state: "too_few", reason: ctx.shortReason(f, e) };
   }
+  // Grouping prose produces one group per case. Checked after the floor, so two long
+  // values still read "too few to judge" rather than a confident shape diagnosis.
+  for (const f of s.requires_category || []) {
+    const e = ctx.freeText(f);
+    if (e) return { ...base, state: "free_text", reason: ctx.freeTextWords("text", e) };
+  }
   if (s.unlocked_by_uses) {
     const blocked = s.unlocked_by_uses.map((id) => useById[id]).filter((x) => x.outcome === "fail" || x.outcome === "not_in_export");
     if (blocked.length) return { ...base, state: "locked", reason: `Locked until ${blocked.map((b) => b.title.toLowerCase()).join(" and ")} ${blocked.length > 1 ? "pass" : "passes"}.`, blockers: blocked.flatMap((b) => b.blockers) };
@@ -1279,7 +1424,7 @@ function computeSignal(s, ctx) {
     const byGroup = groupShare(withO, (c) => c.group || "(none)", (c) => c._days > P.slow_days && c._owners >= P.min_owners);
     out.headline = `${pct(hit.length / Math.max(1, withO.length), 1)} of closed cases`;
     out.detail = `${hit.length} cases open more than ${P.slow_days} days with ${P.min_owners}+ owners.`;
-    out.rows = byGroup.slice(0, 4).map((g) => [g.key, pct(g.share, 1), `${g.n} cases`]);
+    out.rows = ctx.rowsOf("group", byGroup.slice(0, 4), (g) => [g.key, pct(g.share, 1), plural(g.n, "case")]);
   } else if (s.id === "handoff") {
     const held = closed.filter((c) => c._owners === 1), handed = closed.filter((c) => c._owners > 1);
     const cs = (a) => { const v = a.map((c) => Number(c.csat_score)).filter((x) => x >= 1); return v.length ? (v.reduce((p, q) => p + q, 0) / v.length).toFixed(2) : "n/a"; };
@@ -1303,12 +1448,16 @@ function computeSignal(s, ctx) {
       const best = moves.reduce((a, b) => (b.n > (a?.n ?? -1) ? b : a), null);
       return { ...out, state: "too_few",
         reason: `No reason appears on ${minPer} or more cases, so no change in share can be read. `
-          + (best ? `The most common, "${best.k}", has ${best.n}.` : "There are no reasons to compare."),
+          + (best && ctx.quotable("reason") ? `The most common, \u201c${ctx.clip(best.k)}\u201d, has ${best.n}.`
+            : best ? `The most common has ${best.n}.` : "There are no reasons to compare."),
         headline: undefined };
     }
-    out.headline = `${big[0].k} ${big[0].d > 0 ? "up" : "down"}`;
+    // The headline names a reason, so it is a quote like any other.
+    out.headline = ctx.quotable("reason")
+      ? `${ctx.clip(big[0].k)} ${big[0].d > 0 ? "up" : "down"}`
+      : `${plural(big.length, "reason")} moved`;
     out.detail = "Change in share of cases, last quarter versus the nine months before.";
-    out.rows = big.slice(0, 4).map((m) => [m.k, `${m.d > 0 ? "+" : ""}${(m.d * 100).toFixed(1)} pts`, `${m.n} cases`]);
+    out.rows = ctx.rowsOf("reason", big.slice(0, 4), (m) => [m.k, `${m.d > 0 ? "+" : ""}${(m.d * 100).toFixed(1)} pts`, plural(m.n, "case")]);
   } else if (s.id === "open_risk") {
     const p70 = quantile(closed.map((c) => c._days), 0.7);
     const end = Math.max(...U.map((c) => c._created).filter((x) => x != null));
@@ -1316,7 +1465,7 @@ function computeSignal(s, ctx) {
     const old = open.filter((c) => (end - c._created) / DAY > p70);
     out.headline = `${old.length} of ${open.length} open cases`;
     out.detail = `Open longer than ${p70?.toFixed(1)} days, the time 70% of closed cases took.`;
-    out.rows = groupShare(old, (c) => c.group || "(none)", () => true).slice(0, 4).map((g) => [g.key, `${g.n} cases`, ""]);
+    out.rows = ctx.rowsOf("group", groupShare(old, (c) => c.group || "(none)", () => true).slice(0, 4), (g) => [g.key, plural(g.n, "case"), ""]);
   } else if (s.id === "exit_events") {
     const ev = U.filter((c) => real(c.exit_event));
     out.headline = `${new Set(ev.map((c) => c.account_id)).size} accounts`;
@@ -1331,12 +1480,12 @@ function computeSignal(s, ctx) {
       const list = stats.filter((x) => x.n / total >= 0.02 && x.med <= 1.5 && (x.owners == null || x.owners < 1.4)).sort((a, b) => b.n - a.n);
       out.headline = `${list.length} candidate reasons`;
       out.detail = "Frequent, resolved within a day and a half, mostly by one owner.";
-      out.rows = list.slice(0, 5).map((x) => [x.k, `${x.n} cases`, `${pct(x.doc)} documented`]);
+      out.rows = ctx.rowsOf("reason", list.slice(0, 5), (x) => [x.k, plural(x.n, "case"), `${pct(x.doc)} documented`]);
     } else {
       const list = stats.filter((x) => x.n >= 30 && (x.med > 5 || (x.owners != null && x.owners >= 2))).sort((a, b) => b.med - a.med);
       out.headline = `${list.length} reasons`;
       out.detail = "Long to resolve or usually passed between owners.";
-      out.rows = list.slice(0, 5).map((x) => [x.k, `${x.med.toFixed(1)} days`, x.owners != null ? `${x.owners.toFixed(1)} owners` : ""]);
+      out.rows = ctx.rowsOf("reason", list.slice(0, 5), (x) => [x.k, `${x.med.toFixed(1)} days`, x.owners != null ? `${x.owners.toFixed(1)} owners` : ""]);
     }
   }
   return out;

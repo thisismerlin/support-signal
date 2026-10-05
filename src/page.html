@@ -95,7 +95,7 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 .chip { display: inline-flex; align-items: center; gap: 8px; font: 600 0.875rem/1.2 var(--f-body); letter-spacing: -0.01em; white-space: nowrap; }
 .chip::before, .sig-state::before { content: ""; width: 0.74em; height: 0.74em; flex: none; }
 .chip-pass { color: var(--good); } .chip-warn { color: var(--warn); } .chip-fail { color: var(--risk); }
-.chip-not_in_export, .chip-needs_human, .chip-too_few { color: var(--na); }
+.chip-not_in_export, .chip-needs_human, .chip-too_few, .chip-free_text { color: var(--na); }
 .chip-pass::before { background: currentColor; border-radius: 50%; }
 .chip-warn::before { border-radius: 50%; background: linear-gradient(90deg, currentColor 50%, transparent 50%); box-shadow: inset 0 0 0 1.5px currentColor; }
 .chip-fail::before { background: currentColor; border-radius: 2px; }
@@ -104,6 +104,9 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 /* An open ring: some values, not enough of them. Distinct in shape from the dashed
    ring of "not in export" and the filled dot of a pass, not only in colour. */
 .chip-too_few::before { border-radius: 50%; box-shadow: inset 0 0 0 1.5px currentColor; }
+/* A dashed square: values are there, in quantity, but they are the wrong kind. Distinct
+   in shape from every other state, not only in colour. */
+.chip-free_text::before { border-radius: 2px; border: 1.5px dashed currentColor; }
 
 /* ---------- summary: the product shot ---------- */
 #report { display: block; }
@@ -167,7 +170,7 @@ header.top h1 { font-size: clamp(2.75rem, 1rem + 7.4vw, 6rem); font-weight: 680;
 .sig { background: var(--tile); border-radius: 24px; padding: 28px 28px 30px; display: grid; gap: 6px; align-content: start; min-width: 0; }
 .sig-locked { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
 /* Same treatment as locked: a panel saying why there is no number, not a number. */
-.sig-too_few { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
+.sig-too_few, .sig-free_text { order: 1; background: transparent; box-shadow: inset 0 0 0 1px var(--rule); }
 .sig-state { display: inline-flex; align-items: center; gap: 8px; font: 600 0.8125rem/1.2 var(--f-body); letter-spacing: -0.005em; color: var(--good); margin-bottom: 10px; }
 .sig-state::before { background: currentColor; border-radius: 50%; }
 .sig-caution .sig-state { color: var(--warn); }
@@ -408,7 +411,7 @@ footer p { max-width: 86ch; }
         <button type="button" data-src="demo-history" aria-pressed="false">Export with history</button>
         <button type="button" data-src="upload" aria-pressed="false">Your own export</button>
       </div>
-      <p class="privacy">Runs in your browser. Nothing is uploaded, stored or sent anywhere.</p>
+      <p class="privacy">Runs in your browser. Nothing is uploaded, stored or sent anywhere, and the report quotes nothing back from your file but short category labels.</p>
     </div>
   </header>
 

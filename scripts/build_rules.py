@@ -91,6 +91,45 @@ for k, f in r["fields"].items():
         continue
     errs += [f"field {k} guess_requires_word {x!r} is not one lowercase word" for x in w
              if not isinstance(x, str) or not x.islower() or " " in x]
+# The echo caps are the only thing standing between a prose column and a report full of
+# customer text, so a missing or absurd cap must fail the build rather than default.
+e = r.get("echo")
+if not isinstance(e, dict):
+    errs.append("echo is missing: nothing would cap what the report quotes")
+else:
+    if not isinstance(e.get("max_chars"), int) or not 8 <= e["max_chars"] <= 200:
+        errs.append("echo.max_chars must be an integer between 8 and 200")
+    if not isinstance(e.get("max_examples"), int) or not 1 <= e["max_examples"] <= 10:
+        errs.append("echo.max_examples must be an integer between 1 and 10")
+# The free-text thresholds, and the wording every check reports them with.
+ft = r.get("category_free_text")
+if not isinstance(ft, dict):
+    errs.append("category_free_text is missing")
+else:
+    if not isinstance(ft.get("max_unique_share"), (int, float)) or not 0 < ft["max_unique_share"] <= 1:
+        errs.append("category_free_text.max_unique_share must be a share between 0 and 1")
+    if not isinstance(ft.get("max_avg_words"), (int, float)) or ft["max_avg_words"] < 1:
+        errs.append("category_free_text.max_avg_words must be at least 1")
+    if ft.get("provisional") is not True:
+        errs.append("category_free_text must be marked provisional: it is not calibrated")
+    for key in ("title", "text"):
+        if not str(ft.get(key, "")).strip():
+            errs.append(f"category_free_text has no {key}")
+    # The engine substitutes these by name. A placeholder nothing fills would print raw.
+    KNOWN = {"{field}", "{column}", "{distinct}", "{cases}", "{words}"}
+    for key in ("title", "text"):
+        for ph in re.findall(r"\{[a-z_]+\}", str(ft.get(key, ""))):
+            if ph not in KNOWN:
+                errs.append(f"category_free_text.{key} uses {ph}, which the engine does not substitute")
+# requires_category names fields, and only a category field can be judged as one.
+for group in ("checks", "signals"):
+    for item in r.get(group, []):
+        for v in item.get("requires_category", []):
+            if v not in r["fields"]:
+                errs.append(f"{group[:-1]} {item['id']} requires_category {v!r}, which is not a field")
+            elif r["fields"][v].get("shape") != "category":
+                errs.append(f"{group[:-1]} {item['id']} requires_category {v!r}, whose shape is "
+                            f"{r['fields'][v].get('shape')!r}, not category")
 # The evidence floor gates every judgement about what a field's values say, so a
 # missing or nonsensical floor would silently let nearly-empty columns be judged again.
 f = r.get("evidence_floor")

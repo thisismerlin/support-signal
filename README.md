@@ -39,6 +39,13 @@ can't tell. "Not contradicted" means silence, not success.
 - **It runs entirely in your browser.** Your file is read by the page and never
   leaves your machine. Nothing is uploaded, stored or sent anywhere, and there is
   no server.
+- **The report doesn't carry your data either.** Running in the browser is only
+  half of it: a report you can paste elsewhere has to be safe to paste. Nothing
+  from your export is quoted back except a short category label, clipped to 40
+  characters and at most three of them, and never from a column holding prose.
+  Case and conversation IDs are not echoed at all. That holds for the copied JSON
+  as well as the page, which is where it mattered most: the JSON carried values
+  the page never showed.
 - **The demo company is invented.** Larkspur is fictional. Every row, flaw and
   count in it was planted deliberately by a generator with a fixed seed, so the
   checks can be tested against known answers. None of its numbers describe real

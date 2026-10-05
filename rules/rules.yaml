@@ -16,7 +16,7 @@
 # commit SHA, stamped into dist by the deploy workflow -- a commit cannot contain its
 # own SHA, so it is not committed, and an unstamped build says so rather than lying.
 meta:
-  version: 0.9.0
+  version: 0.10.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -26,6 +26,7 @@ meta:
     not_in_export: { label: Not in export, text: The export doesn't contain this. Not a judgement on your system. }
     needs_human: { label: Needs a human, text: Can't be judged automatically. The report says what to look at. }
     too_few: { label: Too few to judge, text: "The column holds some values, but too few to judge anything from. The reason says how many it found." }
+    free_text: { label: Looks like free text, text: "The column mapped to this field holds free text rather than a short repeated label, so it can't be judged as one. The reason says what it found and where the column probably belongs." }
 
 # How much evidence a check or signal needs before it may judge what a field's values
 # say. Nearly empty is not fine: a reason column filled on 2 of 543 cases produced a
@@ -39,6 +40,40 @@ evidence_floor:
   min_cases: 30      # real values, counted per case, not per row
   min_share: 0.05    # and that many must be at least this share of all cases
   provisional: true
+
+# What may be quoted back out of the export, and how much of it.
+#
+# The page's promise is that the file never leaves the browser. It kept that promise
+# and then handed the reader a report to paste elsewhere: with a free-text column
+# mapped to contact reason, AI2's detail and the copied JSON carried hundreds of
+# complete case summaries, names and email addresses among them. No byte was uploaded
+# and the promise was still broken.
+#
+# The rule: nothing from the export reaches the report except a short category label.
+# Values are clipped, lists are capped, and a column holding prose is never quoted at
+# all -- not clipped, not sampled, not at any length.
+echo:
+  max_chars: 40      # a category label is short; anything longer is not a label
+  max_examples: 3    # AI2 quoted every team-type reason it found, B3 every pair
+
+# A column mapped to a category field that turns out to hold free text. 468 distinct
+# values over 543 cases, sentences long, was accepted as contact reason and judged as a
+# reason taxonomy: near-duplicate pairs, team-type wording, demand concentration, all
+# computed over prose. A category field wants a short label repeated across many cases.
+#
+# PROVISIONAL, like every threshold here. Both tests are deliberately generous: the
+# case that prompted them sat at 0.86 unique and well over five words, so there is room
+# before either fires. Don't quote them publicly.
+category_free_text:
+  max_unique_share: 0.5    # above this share of distinct values it is not a category
+  max_avg_words: 5         # or this many words per value on average
+  provisional: true
+  # One wording for every check that reports it: the conclusion is the same each time,
+  # that the column is not a category, and four near-identical titles would only drift.
+  # {field} {column} {distinct} {cases} {words} are substituted by the engine. Only
+  # counts and names are substituted, never a value out of the export.
+  title: "{field} looks like free text"
+  text: "{field} is mapped to \u201c{column}\u201d, which holds {distinct} distinct values across {cases} cases, averaging {words} words each. A category field needs a short label repeated across many cases, so this can't be judged as one. If the column is an agent's write-up, map it to Resolution note instead, where long text is what's expected."
 
 placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"]
 junk_text: ["help", "urgent", "question", "issue", "problem", "re:", "fw:", "hi", "hello", "support", "asap", "query"]
@@ -285,6 +320,7 @@ checks:
   - id: B2
     band: B
     dimension: validity
+    requires_category: [reason]   # meaningless unless the column really is a category
     reads_fields: [reason]
     title: Reasons aren't dominated by a catch-all
     failure_title: A catch-all reason swallows too many cases
@@ -299,6 +335,7 @@ checks:
     band: B
     dimension: consistency
     requires_values: [reason]   # judges what the reasons say, so it needs enough of them
+    requires_category: [reason]   # meaningless unless the column really is a category
     reads_fields: [reason]
     title: Reason codes are a tidy set
     failure_title: Reason codes have sprawled
@@ -409,6 +446,7 @@ checks:
     band: B
     dimension: validity
     requires_values: [reason]   # judges what the reasons say, so it needs enough of them
+    requires_category: [reason]   # meaningless unless the column really is a category
     reads_fields: [reason]
     title: Reasons describe customer needs
     failure_title: Reasons describe teams, not customers
@@ -423,6 +461,7 @@ checks:
     band: B
     dimension: consistency
     requires_values: [reason]   # judges what the reasons say, so it needs enough of them
+    requires_category: [reason]   # meaningless unless the column really is a category
     reads_fields: [reason]
     title: Reasons don't overlap
     failure_title: Reasons overlap
@@ -448,6 +487,7 @@ checks:
     band: A
     dimension: fit for use
     requires_values: [reason]   # judges what the reasons say, so it needs enough of them
+    requires_category: [reason]   # meaningless unless the column really is a category
     reads_fields: [reason]
     title: Demand is concentrated enough to automate
     failure_title: Demand is too scattered to automate easily
@@ -546,6 +586,7 @@ signals:
     # alone, so an empty reason column has to be checked separately or this reports
     # "Stable" off two empty quarters.
     requires_values: [reason]
+    requires_category: [reason]
     # A reason has to appear this many times before a move in its share means anything.
     # Provisional. Below it for every reason the signal says so, rather than reporting
     # "Stable", which is a finding it has no basis for.
@@ -567,12 +608,14 @@ signals:
     title: AI self-help candidates
     unlocked_by_uses: [ai]
     requires_values: [reason]
+    requires_category: [reason]
     shows: Reasons that are frequent, quick, single-owner and documented
     disclaimer: A shortlist to test, not a deflection forecast.
   - id: keep_human
     title: Keep-a-human themes
     unlocked_by_uses: [ai, transfers]
     requires_values: [reason]
+    requires_category: [reason]
     shows: Reasons with long resolution times or many owners
     disclaimer: Where automation is most likely to frustrate customers.
 

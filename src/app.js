@@ -69,7 +69,8 @@
       // Verdict words for a use. The check list keeps the outcome labels from the
       // rules ("Not in export", "Needs a human"); these read as answers, not states.
       const verdict = { pass: "Ready", warn: "Usable with care", fail: "Not ready",
-        not_in_export: "Not in this export", needs_human: "Can't tell yet" }[u.outcome];
+        not_in_export: "Not in this export", needs_human: "Can't tell yet",
+        too_few: "Can't tell yet", free_text: "Can't tell yet" }[u.outcome];
       return `<article class="use use-${u.outcome}">
         <div class="use-top">${chip(u.outcome === "not_in_export" ? "fail" : u.outcome, verdict)}</div>
         <h3>${esc(u.title)}</h3>
@@ -92,7 +93,7 @@
       // apart because the answer differs: locked waits on a check, too few waits on
       // the data. Anything with a reason and no headline renders as a reason, so a new
       // state can never fall through to "On" and print an empty headline.
-      const STATE = { locked: "Locked", too_few: "Too few to judge" };
+      const STATE = { locked: "Locked", too_few: "Too few to judge", free_text: "Looks like free text" };
       if (STATE[s.state]) return `<article class="sig sig-${s.state}"><p class="sig-state">${STATE[s.state]}</p><h3>${esc(s.title)}</h3><p class="sig-shows">${esc(s.shows)}</p><p class="sig-reason">${esc(s.reason)}</p></article>`;
       const rows = (s.rows || []).map((row) => `<tr>${row.map((c) => `<td>${esc(c)}</td>`).join("")}</tr>`).join("");
       return `<article class="sig sig-${s.state}"><p class="sig-state">${s.state === "caution" ? "On, with care" : "On"}</p><h3>${esc(s.title)}</h3>
