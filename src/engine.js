@@ -1,7 +1,7 @@
 // Support Signal engine. Pure functions, no dependencies; runs in the browser and in Node.
 // Everything it judges comes from the rules object (compiled from rules/rules.yaml).
 
-export const ENGINE_VERSION = "0.8.0";
+export const ENGINE_VERSION = "0.9.0";
 
 // ---------- CSV ----------
 export function parseCSV(text) {
@@ -359,8 +359,39 @@ const utc = (y, mo, d, h = 0, mi = 0, se = 0) => {
 // 12.03.2026 and 12-03-2026 are the same date read the same way. They were not: the
 // slash form took a day-first branch, the dotted form fell through to Date.parse and
 // came out month-first, and a dotted European date above the 12th parsed to null.
-const ISO_FORM = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
-const NUM_FORM = /^(\d{1,2})([\/.\-])(\d{1,2})\2(\d{4})(?:[ T,]\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?/;
+// The clock part, shared by both date patterns: hours, minutes, optional seconds, and
+// an optional AM or PM. Without the meridiem "2:05 PM" was read as 02:05, and "12:05 AM"
+// as 12:05 -- midnight reported as midday, twelve hours out, on every row.
+const TIME = "(?:[ T,]\\s*(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*([AaPp][Mm])?)?";
+const ISO_FORM = new RegExp("^(\\d{4})-(\\d{1,2})-(\\d{1,2})" + TIME);
+// The year may be two digits: "25/03/26" is a real export's idea of a date. Which
+// century it means is a convention, not a fact, so the convention is declared in
+// rules.yaml and stated in what was read rather than assumed here.
+const NUM_FORM = new RegExp("^(\\d{1,2})([\\/.\\-])(\\d{1,2})\\2(\\d{4}|\\d{2})(?!\\d)" + TIME);
+
+// 12 AM is midnight and 12 PM is midday; every other hour takes 12 added or nothing.
+// Returned as null when the pair is impossible, so "13 PM" is refused rather than
+// quietly becoming 25:00.
+function hour24(h, mer) {
+  if (!mer) return h <= 23 ? h : null;
+  if (!(h >= 1 && h <= 12)) return null;
+  const pm = /p/i.test(mer);
+  if (h === 12) return pm ? 12 : 0;
+  return pm ? h + 12 : h;
+}
+
+// 00-69 are this century, 70-99 the last. A fixed pivot, not a window around today:
+// a sliding rule would read the same file differently next year, and the built page is
+// required to be a fixed point of its own build.
+const DEFAULT_PIVOT = 70;
+let yearPivot = DEFAULT_PIVOT;
+export function setTwoDigitYearPivot(p) { yearPivot = Number.isInteger(p) ? p : DEFAULT_PIVOT; }
+export function twoDigitYearPivot() { return yearPivot; }
+const fullYear = (raw) => {
+  const y = +raw;
+  if (String(raw).length === 4) return y;
+  return y < yearPivot ? 2000 + y : 1900 + y;
+};
 const NAMED_FORMS = [
   // 12 March 2026
   { re: /^(\d{1,2}) ([A-Za-z]{3,})\.? (\d{4})/, pick: (m) => [m[3], m[2], m[1]] },
@@ -377,7 +408,10 @@ export function parseDate(v, order = null) {
   const s = String(v).trim();
   if (!s) return null;
   let m = s.match(ISO_FORM);
-  if (m) return utc(+m[1], +m[2], +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  if (m) {
+    const h = hour24(+(m[4] || 0), m[7]);
+    return h == null ? null : utc(+m[1], +m[2], +m[3], h, +(m[5] || 0), +(m[6] || 0));
+  }
   for (const f of NAMED_FORMS) {
     m = s.match(f.re);
     if (!m) continue;
@@ -390,7 +424,8 @@ export function parseDate(v, order = null) {
     if (!DATE_ORDERS.includes(order)) return null;   // never guess
     const a = +m[1], b = +m[3];
     const [d, mo] = order === "day_first" ? [a, b] : [b, a];
-    return utc(+m[4], mo, d, +(m[5] || 0), +(m[6] || 0), +(m[7] || 0));
+    const h = hour24(+(m[5] || 0), m[8]);
+    return h == null ? null : utc(fullYear(m[4]), mo, d, h, +(m[6] || 0), +(m[7] || 0));
   }
   return null;
 }
@@ -517,14 +552,50 @@ export const dateFieldsOf = (rules, scope = "case") => Object.keys(rules.fields)
 // One order per mapped date column, decided from that column's own values. A caller's
 // choice wins: an ambiguous column is the user's to settle, and the mapping table asks.
 export function dateOrders({ records, map, rules, scope = "case", chosen = {} }) {
+  const D = rules.date_order || {};
+  setTwoDigitYearPivot(D.two_digit_year_pivot);
+  const minReadable = D.min_readable_share ?? 0;
+  const fields = dateFieldsOf(rules, scope).filter((k) => map[k]);
   const out = {};
-  for (const k of dateFieldsOf(rules, scope)) {
-    const col = map[k];
-    if (!col) continue;
-    const found = dateOrderOf(records.map((r) => r[col]));
-    out[k] = DATE_ORDERS.includes(chosen[k])
-      ? { ...found, order: chosen[k], basis: "chosen" }
-      : found;
+
+  // One: what each column settles on its own.
+  for (const k of fields) out[k] = { field: k, ...dateOrderOf(records.map((r) => r[map[k]])) };
+
+  // Two: pooling. A file is written by one system, so a column nothing settles is read
+  // the way the file's settled columns are read, named so the reader can see where the
+  // order came from and change it. Only where the settled columns agree: two columns
+  // settling opposite ways is a fact about the file, not an order to lend out.
+  const donors = fields.filter((k) => out[k].basis === "settled");
+  const lent = new Set(donors.map((k) => out[k].order));
+  if (donors.length && lent.size === 1) {
+    for (const k of fields) {
+      if (out[k].basis !== "ambiguous") continue;
+      out[k] = { ...out[k], order: [...lent][0], basis: "inferred",
+        inferred_from: donors.map((d) => rules.fields[d].label) };
+    }
+  }
+
+  // Three: the reader's choice, which beats anything detected or inferred.
+  for (const k of fields) {
+    if (DATE_ORDERS.includes(chosen[k])) out[k] = { ...out[k], order: chosen[k], basis: "chosen" };
+  }
+
+  // Four: with an order in hand, can the values actually be read? Measured on non-blank
+  // values only, so an empty column stays empty rather than becoming unreadable, and a
+  // column of text that is not dates at all stops being reported as missing dates.
+  // Skipped where no order is known: an ambiguous column parses nothing, and calling
+  // that unreadable would name the wrong fault.
+  for (const k of fields) {
+    const o = out[k];
+    if (o.basis === "ambiguous" || o.basis === "mixed") continue;
+    const vals = records.map((r) => String(r[map[k]] ?? "").trim()).filter(Boolean);
+    if (!vals.length) continue;
+    const readable = vals.filter((v) => parseDate(v, o.order) != null).length;
+    const share = readable / vals.length;
+    const twoDigit = vals.filter((v) => { const m = v.match(NUM_FORM); return m && String(m[4]).length === 2; }).length;
+    out[k] = { ...o, values: vals.length, readable, readable_share: share,
+      ...(twoDigit ? { two_digit_years: twoDigit } : {}) };
+    if (share < minReadable) out[k] = { ...out[k], basis: "unreadable" };
   }
   return out;
 }
@@ -823,10 +894,13 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
   // "mixed" hold anything back: an ISO column has no order to settle, and a settled one
   // has been settled, so both read as resolved.
   const DO = rules.date_order || {};
+  // The three a check cannot see past. "inferred" and "settled" are readable orders and
+  // "unambiguous" needs none, so none of those holds anything back.
+  const HELD_BACK_DATES = ["ambiguous", "mixed", "unreadable"];
   const unresolvedDate = (def) => {
     for (const k of def.requires_dates || []) {
       const o = orders[k];
-      if (o && (o.basis === "ambiguous" || o.basis === "mixed")) return { field: k, ...o };
+      if (o && HELD_BACK_DATES.includes(o.basis)) return { field: k, ...o };
     }
     return null;
   };
@@ -834,14 +908,19 @@ export function runAudit({ records, mapping, headers = null, history = null, bot
     .replace("{field}", rules.fields[e.field].label)
     .replace("{column}", map[e.field] || "the comment rows")
     .replace("{examined}", e.examined.toLocaleString())
-    .replace("{ambiguous}", e.ambiguous.toLocaleString());
+    .replace("{ambiguous}", e.ambiguous.toLocaleString())
+    .replace("{values}", (e.values ?? 0).toLocaleString())
+    .replace("{readable}", (e.readable ?? 0).toLocaleString())
+    .replace("{from}", (e.inferred_from || []).join(" and ").toLowerCase());
   // One call per check, so the branch below reads the same at every site.
   const dateHold = (id) => {
     const e = unresolvedDate(checkDef[id]);
     if (!e) return null;
-    return { e, outcome: "ambiguous_dates", display: e.basis === "mixed" ? "Two formats" : "Order unclear",
+    const DISPLAY = { mixed: "Two formats", unreadable: "Unreadable", ambiguous: "Order unclear" };
+    const TITLE = { mixed: "mixed_title", unreadable: "unreadable_title", ambiguous: "title" };
+    return { e, outcome: "ambiguous_dates", display: DISPLAY[e.basis],
       detail: dateWords(e.basis, e),
-      extra: { title_text: dateWords(e.basis === "mixed" ? "mixed_title" : "title", e), ambiguous_date_field: e.field } };
+      extra: { title_text: dateWords(TITLE[e.basis], e), ambiguous_date_field: e.field } };
   };
   // The first field a check or signal declares is a category but isn't.
   const notCategory = (def) => {
@@ -1563,7 +1642,7 @@ function computeSignal(s, ctx) {
   // no point asking whether the reasons are thin if the timeline is unread.
   for (const f of s.requires_dates || []) {
     const o = (ctx.orders || {})[f];
-    if (o && (o.basis === "ambiguous" || o.basis === "mixed")) {
+    if (o && ["ambiguous", "mixed", "unreadable"].includes(o.basis)) {
       return { ...base, state: "ambiguous_dates", reason: ctx.dateWords(o.basis, { ...o, field: f }) };
     }
   }

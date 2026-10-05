@@ -16,7 +16,7 @@
 # commit SHA, stamped into dist by the deploy workflow -- a commit cannot contain its
 # own SHA, so it is not committed, and an unstamped build says so rather than lying.
 meta:
-  version: 0.11.0
+  version: 0.12.0
   status: draft
   updated: 2026-10-05
   outcomes:
@@ -85,9 +85,24 @@ category_free_text:
 # Wording for the two unresolved cases. {field} {column} {examined} {ambiguous} are
 # substituted by the engine; counts and names only, never a value from the export.
 date_order:
+  # Which century a two-digit year means is a convention, not a fact. A fixed pivot,
+  # not a window around today: a sliding rule would read the same file differently next
+  # year, and the built page has to be a fixed point of its own build. 00-69 are read as
+  # 2000-2069 and 70-99 as 1970-1999. PROVISIONAL.
+  two_digit_year_pivot: 70
+  century_rule: "two-digit years 00-69 read as 2000-2069, and 70-99 as 1970-1999"
+  # Below this share of non-blank values parsing, the column's dates could not be read
+  # and the checks that need them are held back. Blanks are not counted either way: a
+  # missing date and an unreadable one are different faults and were reported as one,
+  # because an unparsed value arrived downstream as null exactly like an absent one.
+  # PROVISIONAL.
+  min_readable_share: 0.5
   title: "{field} date order is unclear"
   mixed_title: "{field} holds two date formats"
   ambiguous: "{field} is mapped to \u201c{column}\u201d, whose dates are written as three numbers with no month name and no four-digit year first. Every one of the {examined} values read could be either day-first or month-first, so nothing in the column settles it. Choose the order in the mapping table and the checks that read dates will run."
+  unreadable_title: "{field} dates could not be read"
+  unreadable: "{field} is mapped to \u201c{column}\u201d, where only {readable} of {values} non-blank values parse as a date, in any format this reads. The rest are not dates it recognises, so the checks that need them are held back rather than given a column of gaps. An unreadable value is not a missing one, and reporting it as missing is what this replaces."
+  inferred: "{field} is mapped to \u201c{column}\u201d, where nothing settles the order on its own, so it is read the same way as {from}, which the file does settle. Change it in the mapping table if that is wrong."
   mixed: "{field} is mapped to \u201c{column}\u201d, which holds both orders: some values are only valid read day-first and others only month-first. That is two date formats in one column rather than one order to choose, so it needs fixing in the export before these dates can be read."
 
 placeholders: ["", "n/a", "na", "none", "null", "-", "--", "tbc", "tbd", "unknown", "other", "general", "misc", "miscellaneous", "not set", "(blank)"]

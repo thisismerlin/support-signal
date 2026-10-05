@@ -287,6 +287,7 @@
     // report that only mentions dates when they go wrong leaves the reader unable to
     // tell a settled order from one nobody looked at.
     const ORDER_WORDS = { day_first: "day first (31/01/2026)", month_first: "month first (01/31/2026)" };
+    const twoDigit = Object.values(L.date_order || {}).some((o) => o && o.two_digit_years);
     for (const [field, o] of Object.entries(L.date_order || {})) {
       if (!o || o.basis === "unambiguous") continue;
       const label = esc((RULES.fields[field] || {}).label || field);
@@ -294,11 +295,17 @@
         bits.push(`<li><strong>${label} dates read ${ORDER_WORDS[o.order]}</strong>, settled by ${n(o.settled_by)} of ${n(o.examined)} values that can only be read that way.</li>`);
       else if (o.basis === "chosen")
         bits.push(`<li><strong>${label} dates read ${ORDER_WORDS[o.order]}</strong>, because you chose that order. Nothing in the column settles it.</li>`);
+      else if (o.basis === "inferred")
+        bits.push(`<li><strong>${label} dates read ${ORDER_WORDS[o.order]}</strong>, the same way as ${esc((o.inferred_from || []).join(" and ").toLowerCase())}, which the file settles. Nothing in this column settles it on its own, so change it below if that is wrong.</li>`);
+      else if (o.basis === "unreadable")
+        bits.push(`<li><strong>${label} dates could not be read.</strong> Only ${n(o.readable)} of ${n(o.values)} non-blank values parse as a date, so the checks that need them are held back rather than given a column of gaps. An unreadable value is not a missing one.</li>`);
       else if (o.basis === "mixed")
         bits.push(`<li><strong>${label} holds two date formats.</strong> Some values are only valid day first and others only month first, so the checks that read dates are held back.</li>`);
       else
         bits.push(`<li><strong>${label} dates could be read either way.</strong> All ${n(o.examined)} values work as day first or month first, so the order is yours to choose in the mapping table. Until then the checks that read dates are held back.</li>`);
     }
+    if (twoDigit && RULES.date_order && RULES.date_order.century_rule)
+      bits.push(`<li><strong>Two-digit years were read</strong>: ${esc(RULES.date_order.century_rule)}.</li>`);
     if (L.comments) {
       bits.push(`<li><strong>${n(L.comments)} comments</strong> read across ${n(L.cases_with_comments)} cases${
         per ? `, ${per.median} per case typically (${per.min} to ${per.max})` : ""}.</li>`);
@@ -412,7 +419,7 @@
       // sits in the row that maps the column, because that is where the reader is
       // already deciding what the column is.
       const o = (dateOrdersNow() || {})[k];
-      const needsOrder = o && (o.basis === "ambiguous" || o.basis === "chosen");
+      const needsOrder = o && ["ambiguous", "chosen", "inferred", "unreadable"].includes(o.basis);
       const picker = needsOrder
         ? `<div class="map-order"><span>Read these dates</span>
             <select id="order-${k}" data-order="${k}">

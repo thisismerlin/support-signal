@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile, parseDate, dateOrderOf, looksLikeDate } from "../src/engine.js";
+import { parseCSV, autoMap, mapColumns, headerVariants, runAudit, evalThreshold, nearDuplicate, collapseRows, readSummary, looksLikeSameFile, parseDate, dateOrderOf, looksLikeDate, twoDigitYearPivot } from "../src/engine.js";
 
 const rules = JSON.parse(readFileSync(new URL("../dist/rules.json", import.meta.url)));
 const expected = JSON.parse(readFileSync(new URL("../data/expected.json", import.meta.url)));
@@ -1830,19 +1830,47 @@ for (const [settle, order] of [["day_first", "day_first"], ["month_first", "mont
   });
 }
 
-// The order is settled per column, so settling one leaves its siblings unsettled. This
-// is the conservative reading: a check is released only when every date column it reads
-// can be read. Pooling evidence across a file's date columns would release more, and
-// would be a different rule from the one asked for.
-test("settling one date column does not settle another", () => {
+// Pooling. A file is written by one system, so a column nothing settles is read the way
+// the file's settled columns are read. This replaces the earlier per-column-only rule,
+// under which settling one column left its siblings ambiguous and held B4 back on a
+// file that plainly said how its dates were written.
+test("a column nothing settles borrows the order the file settles", () => {
   const r = ambiguousDateExport({ settle: "created_only" });
   assert.equal(r.load.date_order.created_at.basis, "settled");
-  assert.equal(r.load.date_order.closed_at.basis, "ambiguous");
-  // AI6 reads created_at only, so it runs.
+  const borrowed = r.load.date_order.closed_at;
+  assert.equal(borrowed.basis, "inferred");
+  assert.equal(borrowed.order, "day_first", "the order the file settled");
+  assert.deepEqual(borrowed.inferred_from, ["Created"], "names where the order came from");
+  // And both checks now run, where B4 used to be held back.
   assert.notEqual(r.checks.AI6.outcome, "ambiguous_dates");
-  // B4 reads both, so it waits on the one that is still unreadable.
-  assert.equal(r.checks.B4.outcome, "ambiguous_dates");
-  assert.equal(r.checks.B4.ambiguous_date_field, "closed_at", "names the column still unread");
+  assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
+});
+
+test("an inferred order can be overridden by hand", () => {
+  const r = ambiguousDateExport({ settle: "created_only", chosen: { closed_at: "month_first" } });
+  assert.equal(r.load.date_order.closed_at.basis, "chosen");
+  assert.equal(r.load.date_order.closed_at.order, "month_first");
+  // The column that settled itself is unaffected by the override on its sibling.
+  assert.equal(r.load.date_order.created_at.basis, "settled");
+});
+
+// Two columns settling opposite ways is a fact about the file, not an order to lend.
+test("columns that settle opposite ways lend nothing", () => {
+  const rows = [];
+  for (let i = 1; i <= 40; i++) {
+    const d = (i % 11) + 1, mo = (i % 9) + 1;
+    rows.push({ case_id: `LS-${i}`, status: "Solved",
+      created_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026`,
+      closed_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026`,
+      last_update_at: `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/2026` });
+  }
+  rows[0].created_at = "25/03/2026";      // only valid day-first
+  rows[0].closed_at = "03/25/2026";       // only valid month-first
+  const headers = Object.keys(rows[0]);
+  const r = runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+  assert.equal(r.load.date_order.created_at.order, "day_first", "each settled column keeps its own");
+  assert.equal(r.load.date_order.closed_at.order, "month_first");
+  assert.equal(r.load.date_order.last_update_at.basis, "ambiguous", "no single order to lend");
 });
 
 test("a mixed column says it holds two formats and stays held back", () => {
@@ -1891,4 +1919,152 @@ test("an ISO export is unaffected by any of this", () => {
     assert.notEqual(report.checks.B4.outcome, "ambiguous_dates", which);
     for (const s of report.signals) assert.notEqual(s.state, "ambiguous_dates", `${which} ${s.id}`);
   }
+});
+
+// ======================================================= formats real exports arrive in
+// 1. TWELVE-HOUR CLOCKS. "2:05 PM" was read as 02:05 and "12:05 AM" as 12:05 --
+// midnight reported as midday, twelve hours out on every row carrying one.
+const at = (t) => (t == null ? null : new Date(t).toISOString().slice(11, 16));
+
+for (const [value, want] of [
+  ["3/25/2026 2:05 PM", "14:05"],
+  ["3/25/2026 2:05 pm", "14:05"],
+  ["3/25/2026 2:05 AM", "02:05"],
+  ["3/25/2026 12:05 AM", "00:05"],   // midnight, not midday
+  ["3/25/2026 12:05 PM", "12:05"],   // midday, not midnight plus twelve
+  ["3/25/2026 11:59 PM", "23:59"],
+  ["3/25/2026 12:00 AM", "00:00"],
+  ["3/25/2026 14:30", "14:30"],      // a 24-hour clock still works
+]) {
+  test(`${value} reads as ${want}`, () => assert.equal(at(parseDate(value, "month_first")), want));
+}
+
+test("AM and PM work on ISO timestamps too", () => {
+  assert.equal(at(parseDate("2026-03-25 2:05 PM")), "14:05");
+  assert.equal(at(parseDate("2026-03-25 12:05 AM")), "00:05");
+});
+
+test("an hour that cannot carry a meridiem is refused, not wrapped", () => {
+  for (const v of ["3/25/2026 13:05 PM", "3/25/2026 0:05 AM", "3/25/2026 25:00"])
+    assert.equal(parseDate(v, "month_first"), null, v);
+});
+
+// 2. TWO-DIGIT YEARS. "25/03/26" returned null.
+test("a two-digit year is read, under the same order rules", () => {
+  assert.equal(parseDate("25/03/26", "day_first") != null, true);
+  assert.equal(new Date(parseDate("25/03/26", "day_first")).toISOString().slice(0, 10), "2026-03-25");
+  assert.equal(parseDate("25/03/26", "month_first"), null, "25 is not a month either way");
+  assert.equal(new Date(parseDate("03/25/26", "month_first")).toISOString().slice(0, 10), "2026-03-25");
+  // And with a clock attached.
+  assert.equal(at(parseDate("25/03/26 2:05 PM", "day_first")), "14:05");
+});
+
+test("the century rule is a fixed pivot, declared, and applied both sides of it", () => {
+  const pivot = rules.date_order.two_digit_year_pivot;
+  assert.equal(twoDigitYearPivot(), pivot, "the engine uses the declared pivot");
+  const y = (v, o) => new Date(parseDate(v, o)).toISOString().slice(0, 4);
+  assert.equal(y("25/03/00", "day_first"), "2000");
+  assert.equal(y("25/03/69", "day_first"), "2069");
+  assert.equal(y("25/03/70", "day_first"), "1970");
+  assert.equal(y("25/03/99", "day_first"), "1999");
+  // Stated in the report, not left for the reader to work out.
+  assert.match(rules.date_order.century_rule, /00-69/);
+  assert.match(rules.date_order.century_rule, /70-99/);
+});
+
+test("a two-digit year does not swallow a four-digit one", () => {
+  assert.equal(new Date(parseDate("25/03/2026", "day_first")).toISOString().slice(0, 4), "2026");
+  // Five digits is not a year at all.
+  assert.equal(parseDate("25/03/20265", "day_first"), null);
+});
+
+// A column of two-digit years is detected and the century rule reported.
+test("a two-digit-year column is read and says which century it used", () => {
+  const rows = [];
+  for (let i = 1; i <= 40; i++) {
+    const d = (i % 11) + 1, mo = (i % 9) + 1;
+    const v = `${String(d).padStart(2, "0")}/${String(mo).padStart(2, "0")}/26`;
+    rows.push({ case_id: `LS-${i}`, created_at: v, closed_at: v, status: "Solved" });
+  }
+  rows[0].created_at = "25/03/26";   // settles the column day-first
+  rows[0].closed_at = "25/03/26";
+  const headers = Object.keys(rows[0]);
+  const r = runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+  const o = r.load.date_order.created_at;
+  assert.equal(o.order, "day_first");
+  assert.ok(o.two_digit_years > 0, "says the column used two-digit years");
+  assert.equal(o.readable, o.values, "every value was read");
+  assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
+});
+
+// 3. UNREADABLE COLUMNS MUST BE LOUD. An unparsed value reached the checks as null,
+// exactly like an absent one, so a column of text in the created-date slot was reported
+// as cases with missing dates rather than as a column that could not be read.
+function unreadableDateExport(values) {
+  const rows = values.map((v, i) => ({
+    case_id: `LS-${i + 1}`, created_at: v, closed_at: "2026-03-20", status: "Solved",
+  }));
+  const headers = Object.keys(rows[0]);
+  return runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+}
+
+test("a column whose values are not dates says so and holds the checks back", () => {
+  const junk = Array.from({ length: 40 }, (_, i) => `Week ${i % 8} of the rollout`);
+  const r = unreadableDateExport(junk);
+  const o = r.load.date_order.created_at;
+  assert.equal(o.basis, "unreadable");
+  assert.equal(o.readable, 0);
+  assert.equal(o.values, 40);
+  const c = r.checks.B4;
+  assert.equal(c.outcome, "ambiguous_dates", c.detail);
+  assert.match(c.detail, /parse as a date, in any format this reads/);
+  assert.match(c.title, /could not be read/);
+  // The whole point: not reported as missing dates.
+  assert.doesNotMatch(c.detail, /impossible or contradictory/);
+});
+
+test("blanks are not unreadable, and an empty column is not either", () => {
+  // Mostly blank, the few values readable: a missing-date problem, not a reading one.
+  const mostlyBlank = Array.from({ length: 40 }, (_, i) => (i < 3 ? "2026-03-12" : ""));
+  const r = unreadableDateExport(mostlyBlank);
+  assert.notEqual(r.load.date_order.created_at.basis, "unreadable",
+    "blank values must not count against readability");
+  // Entirely blank: nothing to read either way.
+  const allBlank = unreadableDateExport(Array.from({ length: 40 }, () => ""));
+  assert.notEqual(allBlank.load.date_order.created_at.basis, "unreadable");
+});
+
+test("a column mostly readable with some junk is still read", () => {
+  const mixed = Array.from({ length: 40 }, (_, i) => (i < 6 ? "not a date" : "2026-03-12"));
+  const r = unreadableDateExport(mixed);
+  const o = r.load.date_order.created_at;
+  assert.notEqual(o.basis, "unreadable", "34 of 40 readable is above the floor");
+  assert.equal(o.readable, 34);
+  assert.ok(o.readable_share > rules.date_order.min_readable_share);
+});
+
+test("the readable floor is declared and provisional", () => {
+  const f = rules.date_order.min_readable_share;
+  assert.ok(f > 0 && f <= 1, "a share between 0 and 1");
+  assert.ok(rules.date_order.unreadable && rules.date_order.unreadable_title, "wording for it");
+});
+
+// A US export in the shape one actually arrives in: month-first, 12-hour clock.
+test("a US export with a 12-hour clock reads end to end", () => {
+  const rows = [];
+  for (let i = 1; i <= 40; i++) {
+    const d = (i % 20) + 1, mo = (i % 9) + 1;
+    const stamp = `${mo}/${d}/2026`;
+    rows.push({ case_id: `LS-${i}`, created_at: `${stamp} 9:15 AM`, closed_at: `${stamp} 4:45 PM`,
+      status: "Solved", reason: ["Billing", "Login issue"][i % 2] });
+  }
+  const headers = Object.keys(rows[0]);
+  const r = runAudit({ records: rows, mapping: autoMap(headers, rules), headers, rules });
+  const o = r.load.date_order.created_at;
+  assert.equal(o.order, "month_first", "a day above 12 in the second position settles it");
+  assert.equal(o.basis, "settled");
+  assert.equal(o.readable, o.values, "every value read, 12-hour clock and all");
+  assert.notEqual(r.checks.B4.outcome, "ambiguous_dates");
+  // Same day, 9:15 to 16:45, so nothing is closed before it was created.
+  assert.equal(r.checks.B4.outcome, "pass", r.checks.B4.detail);
 });
